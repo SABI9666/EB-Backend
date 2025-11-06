@@ -33,8 +33,8 @@ app.use(cors({
             'http://localhost:3000',
             'http://localhost:5500',
             'http://127.0.0.1:5500',
-            'https://eb-tracker-frontend.vercel.app',
-            'https://eb-tracker-frontend-*.vercel.app', // Vercel preview deployments
+            'https://eb-traker.vercel.app',
+            'https://eb-traker.vercel.app-*.vercel.app', // Vercel preview deployments
         ];
         
         // Check if origin matches allowed patterns
@@ -265,4 +265,5 @@ process.on('SIGINT', () => {
 });
 
 module.exports = app;
+
 
