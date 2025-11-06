@@ -1,5 +1,5 @@
 {
-  "name": "ebtracker-backend",
+  "name": "EB-Backend",
   "version": "1.0.0",
   "description": "EBTracker Project Management Backend",
   "main": "server.js",
