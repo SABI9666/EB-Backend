@@ -1,1084 +1,644 @@
-// api/email.js - Email notification API
+// api/email.js - Enhanced Email Notification API with Timesheet & Invoice Notifications
 const express = require('express');
 const { Resend } = require('resend');
 const admin = require('./_firebase-admin');
 
-// Note: No 'router' here, we export the router and the function at the end
 const emailRouter = express.Router();
-const resend = new Resend(process.env.RESEND_API_KEY);
 const db = admin.firestore();
 
-// --- 1. Event to Role Map (Who to email) ---
+// ==========================================
+// CONFIGURATION
+// ==========================================
+const FROM_EMAIL = 'EB-Tracker <sabin@edanbrook.com>'; 
+const DASHBOARD_URL = 'https://edanbrook-tracker.web.app';
+
 const EMAIL_RECIPIENT_MAP = {
-  'proposal.created': ['estimator', 'Estimator', 'COO', 'director', 'Director'], // + BDM who created it
-  'project.submitted': ['estimator', 'Estimator', 'COO', 'director', 'Director'], // + BDM who submitted it (alias for proposal.created)
-  'project.approved_by_director': ['bdm', 'BDM'], // BDM who created the project
-  'proposal.uploaded': ['estimator', 'Estimator'],
-  'estimation.complete': ['COO'],
-  'pricing.allocated': ['director', 'Director'],
-  'project.won': ['COO', 'director', 'Director'],
-  'project.allocated': ['Design Manager', 'designManager'],
-  'designer.allocated': [], // Designer email handled separately
-  'variation.allocated': ['bdm', 'BDM', 'COO', 'director', 'Director'], // + project BDM
-  'variation.approved': ['bdm', 'BDM', 'COO', 'director', 'Director'], // + project BDM
-  'invoice.saved': ['bdm', 'BDM', 'COO', 'director', 'Director'] // + project BDM
+  'proposal.created': ['coo', 'director', 'estimator'],
+  'project.submitted': ['coo', 'director', 'estimator'],
+  'project.approved_by_director': [], // Dynamic only (BDM)
+  'proposal.uploaded': ['estimator'],
+  'estimation.complete': ['coo'],
+  'pricing.complete': ['director'], // COO completes pricing → Director approves
+  'pricing.allocated': ['director'], // For backwards compatibility
+  'project.won': ['coo', 'director'],
+  'project.allocated': ['coo'], // COO allocates → Design Manager (+ dynamic Design Manager)
+  'designer.allocated': ['coo'], // Design Manager allocates → Designer (+ dynamic Designer)
+  'variation.allocated': ['bdm', 'coo', 'director'],
+  'variation.approved': ['bdm', 'coo', 'director', 'design_lead'],
+  'invoice.saved': ['bdm', 'coo', 'director'],
+  
+  // New notification types for timesheet workflow
+  'time_request.created': ['design_lead', 'coo', 'director'], // Designer requests additional hours
+  'time_request.approved': ['designer', 'design_lead', 'director'], // COO approves additional hours
+  'time_request.rejected': ['designer', 'design_lead'], // COO rejects additional hours
+  'variation.requested': ['coo', 'director'], // Design Manager requests variation
+  'variation.approved_detail': ['design_lead', 'bdm', 'director', 'coo'], // Variation approval with hour/rate details
+  'invoice.created': ['coo', 'director', 'bdm'], // Invoice created
+  'invoice.payment_due': ['coo', 'director', 'bdm'], // Payment due reminder
+  'invoice.overdue': ['coo', 'director', 'bdm'] // Overdue payment notification
 };
 
-// --- 2. Professional Email Templates ---
+// ==========================================
+// PROFESSIONAL HTML EMAIL TEMPLATES
+// ==========================================
+
+// Base HTML wrapper for consistent styling
+function getEmailWrapper(content, footerText = '') {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EB-Tracker Notification</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7fa;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f4f7fa;">
+    <tr>
+      <td style="padding: 40px 20px;">
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+          
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
+              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600; letter-spacing: 0.5px;">
+                EB-Tracker
+              </h1>
+              <p style="margin: 5px 0 0 0; color: #e0e7ff; font-size: 14px;">
+                Project Management System
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 40px 30px;">
+              ${content}
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 20px 30px; background-color: #f8fafc; border-radius: 0 0 8px 8px; text-align: center;">
+              <p style="margin: 0 0 10px 0; color: #64748b; font-size: 13px;">
+                ${footerText || 'This is an automated notification from EB-Tracker'}
+              </p>
+              <p style="margin: 0; color: #94a3b8; font-size: 12px;">
+                © ${new Date().getFullYear()} Edanbrook. All rights reserved.
+              </p>
+            </td>
+          </tr>
+          
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+}
+
+// Reusable button component
+function getButton(text, url, color = '#667eea') {
+  return `
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin: 25px 0;">
+      <tr>
+        <td style="border-radius: 6px; background-color: ${color};">
+          <a href="${url}" target="_blank" style="display: inline-block; padding: 14px 32px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
+            ${text}
+          </a>
+        </td>
+      </tr>
+    </table>
+  `;
+}
+
+// Info box component
+function getInfoBox(items) {
+  const rows = items.map(item => `
+    <tr>
+      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0;">
+        <strong style="color: #475569; font-size: 14px;">${item.label}:</strong>
+        <span style="color: #1e293b; font-size: 14px; margin-left: 8px;">${item.value}</span>
+      </td>
+    </tr>
+  `).join('');
+  
+  return `
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin: 20px 0; background-color: #f8fafc; border-radius: 6px; padding: 15px;">
+      ${rows}
+    </table>
+  `;
+}
+
+// Alert/Status banner
+function getStatusBanner(message, type = 'info') {
+  const colors = {
+    success: { bg: '#dcfce7', border: '#22c55e', text: '#166534' },
+    warning: { bg: '#fef3c7', border: '#f59e0b', text: '#92400e' },
+    info: { bg: '#dbeafe', border: '#3b82f6', text: '#1e40af' },
+    error: { bg: '#fee2e2', border: '#ef4444', text: '#991b1b' },
+    urgent: { bg: '#fef2f2', border: '#dc2626', text: '#7f1d1d' }
+  };
+  
+  const color = colors[type] || colors.info;
+  
+  return `
+    <div style="background-color: ${color.bg}; border-left: 4px solid ${color.border}; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
+      <p style="margin: 0; color: ${color.text}; font-size: 14px; line-height: 1.5;">
+        ${message}
+      </p>
+    </div>
+  `;
+}
+
+// Format currency
+function formatCurrency(amount) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2
+  }).format(amount || 0);
+}
+
+// Format date
+function formatDate(date) {
+  if (!date) return 'N/A';
+  const d = date instanceof Date ? date : new Date(date);
+  return d.toLocaleDateString('en-US', { 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric' 
+  });
+}
+
+// ==========================================
+// EMAIL TEMPLATES (Including New Templates)
+// ==========================================
 const EMAIL_TEMPLATE_MAP = {
+  'default': {
+    subject: 'Notification from EB-Tracker',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 20px 0; color: #1e293b; font-size: 20px;">Notification</h2>
+      <p style="margin: 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        ${data.message || 'You have a new notification from EB-Tracker.'}
+      </p>
+      ${getButton('View Dashboard', DASHBOARD_URL)}
+    `)
+  },
+
+  // =============== TIMESHEET TEMPLATES ===============
+  'time_request.created': {
+    subject: '⏰ Additional Time Request: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ⏰ Additional Time Request Submitted
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A designer has requested additional hours for the following project:
+      </p>
+      ${getInfoBox([
+        { label: 'Project', value: `${data.projectName} (${data.projectCode || 'N/A'})` },
+        { label: 'Client', value: data.clientCompany || 'N/A' },
+        { label: 'Designer', value: data.designerName || 'N/A' },
+        { label: 'Requested Hours', value: `${data.requestedHours || 0} hours` },
+        { label: 'Current Hours Logged', value: `${data.currentHoursLogged || 0} hours` },
+        { label: 'Current Allocated', value: `${data.currentAllocatedHours || 0} hours` },
+        { label: 'Reason', value: data.reason || 'No reason provided' }
+      ])}
+      ${getStatusBanner('This request requires approval from COO/Director.', 'warning')}
+      ${getButton('Review Request', `${DASHBOARD_URL}/time-requests`)}
+    `, 'Please review and approve/reject this time request.')
+  },
+
+  'time_request.approved': {
+    subject: '✅ Additional Time Approved: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ✅ Additional Time Request Approved
+      </h2>
+      ${getStatusBanner('Your request for additional time has been approved!', 'success')}
+      ${getInfoBox([
+        { label: 'Project', value: `${data.projectName} (${data.projectCode || 'N/A'})` },
+        { label: 'Requested Hours', value: `${data.requestedHours || 0} hours` },
+        { label: 'Approved Hours', value: `${data.approvedHours || 0} hours` },
+        { label: 'Approved By', value: data.approvedBy || 'COO' },
+        { label: 'Approval Date', value: formatDate(new Date()) },
+        { label: 'Comments', value: data.comments || 'No additional comments' }
+      ])}
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        The approved hours have been added to your project allocation. You may proceed with logging your timesheet.
+      </p>
+      ${getButton('View Project', `${DASHBOARD_URL}/projects/${data.projectId}`)}
+    `)
+  },
+
+  'time_request.rejected': {
+    subject: '❌ Additional Time Request Rejected: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ❌ Additional Time Request Rejected
+      </h2>
+      ${getStatusBanner('Your request for additional time has been rejected.', 'error')}
+      ${getInfoBox([
+        { label: 'Project', value: `${data.projectName} (${data.projectCode || 'N/A'})` },
+        { label: 'Requested Hours', value: `${data.requestedHours || 0} hours` },
+        { label: 'Rejected By', value: data.rejectedBy || 'COO' },
+        { label: 'Reason', value: data.rejectReason || 'No reason provided' }
+      ])}
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        Please contact your Design Manager if you need to discuss this further.
+      </p>
+      ${getButton('View Project', `${DASHBOARD_URL}/projects/${data.projectId}`)}
+    `)
+  },
+
+  // =============== VARIATION TEMPLATES ===============
+  'variation.requested': {
+    subject: '📊 Variation Request: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        📊 Variation Request Submitted
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A Design Manager has submitted a variation request for approval:
+      </p>
+      ${getInfoBox([
+        { label: 'Project', value: `${data.projectName} (${data.projectCode || 'N/A'})` },
+        { label: 'Client', value: data.clientCompany || 'N/A' },
+        { label: 'Variation Type', value: data.variationType || 'N/A' },
+        { label: 'Requested By', value: data.requestedBy || 'N/A' },
+        { label: 'Description', value: data.variationDescription || 'N/A' }
+      ])}
+      ${getStatusBanner('This variation requires your approval.', 'warning')}
+      ${getButton('Review Variation', `${DASHBOARD_URL}/variations`)}
+    `)
+  },
+
+  'variation.approved_detail': {
+    subject: '✅ Variation Approved: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ✅ Variation Approved with Details
+      </h2>
+      ${getStatusBanner('The variation request has been approved with the following details:', 'success')}
+      ${getInfoBox([
+        { label: 'Project', value: `${data.projectName} (${data.projectCode || 'N/A'})` },
+        { label: 'Client', value: data.clientCompany || 'N/A' },
+        { label: 'Variation Type', value: data.variationType || 'N/A' },
+        { label: 'Additional Hours', value: data.additionalHours ? `${data.additionalHours} hours` : 'N/A' },
+        { label: 'New Rate', value: data.newRate ? formatCurrency(data.newRate) : 'N/A' },
+        { label: 'Total Impact', value: data.totalImpact ? formatCurrency(data.totalImpact) : 'N/A' },
+        { label: 'Approved By', value: data.approvedBy || 'N/A' },
+        { label: 'Approval Date', value: formatDate(new Date()) }
+      ])}
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        Please update your project plans accordingly and communicate these changes to your team.
+      </p>
+      ${getButton('View Project Details', `${DASHBOARD_URL}/projects/${data.projectId}`)}
+    `)
+  },
+
+  // =============== INVOICE TEMPLATES ===============
+  'invoice.created': {
+    subject: '💰 New Invoice Created: {{projectName}} - {{invoiceNumber}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        💰 New Invoice Created
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A new invoice has been generated and requires your review:
+      </p>
+      ${getInfoBox([
+        { label: 'Invoice Number', value: data.invoiceNumber || 'N/A' },
+        { label: 'Project', value: `${data.projectName} (${data.projectCode || 'N/A'})` },
+        { label: 'Client', value: data.clientCompany || 'N/A' },
+        { label: 'Invoice Amount', value: formatCurrency(data.invoiceAmount) },
+        { label: 'Due Date', value: formatDate(data.dueDate) },
+        { label: 'Created By', value: data.createdBy || 'Accounts' },
+        { label: 'Payment Terms', value: data.paymentTerms || 'Net 30' }
+      ])}
+      ${getStatusBanner('Please review and approve this invoice before sending to the client.', 'info')}
+      ${getButton('View Invoice', `${DASHBOARD_URL}/invoices/${data.invoiceId}`)}
+    `, 'Invoice requires review and approval.')
+  },
+
+  'invoice.payment_due': {
+    subject: '⚠️ Payment Due Reminder: {{invoiceNumber}} - {{clientCompany}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ⚠️ Payment Due Reminder
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        The following invoice payment is due soon:
+      </p>
+      ${getInfoBox([
+        { label: 'Invoice Number', value: data.invoiceNumber || 'N/A' },
+        { label: 'Client', value: data.clientCompany || 'N/A' },
+        { label: 'Project', value: data.projectName || 'N/A' },
+        { label: 'Invoice Amount', value: formatCurrency(data.invoiceAmount) },
+        { label: 'Due Date', value: formatDate(data.dueDate) },
+        { label: 'Days Until Due', value: `${data.daysUntilDue || 0} days` },
+        { label: 'Contact Person', value: data.contactPerson || 'N/A' }
+      ])}
+      ${getStatusBanner(`Payment is due in ${data.daysUntilDue || 0} days. Please follow up with the client if necessary.`, 'warning')}
+      
+      <div style="margin: 25px 0; padding: 20px; background-color: #f0f9ff; border-radius: 6px;">
+        <h3 style="margin: 0 0 10px 0; color: #0369a1; font-size: 16px;">Recommended Actions:</h3>
+        <ul style="margin: 10px 0; padding-left: 20px; color: #0c4a6e; font-size: 14px;">
+          <li style="margin: 5px 0;">Send a courtesy reminder to the client</li>
+          <li style="margin: 5px 0;">Verify the invoice was received</li>
+          <li style="margin: 5px 0;">Check if there are any issues with the invoice</li>
+          <li style="margin: 5px 0;">Update the payment status in the system</li>
+        </ul>
+      </div>
+      
+      ${getButton('View Invoice Details', `${DASHBOARD_URL}/invoices/${data.invoiceId}`)}
+    `, 'Payment reminder - please take necessary action.')
+  },
+
+  'invoice.overdue': {
+    subject: '🔴 OVERDUE Payment: {{invoiceNumber}} - {{clientCompany}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #dc2626; font-size: 22px;">
+        🔴 OVERDUE Payment Alert
+      </h2>
+      ${getStatusBanner('This invoice is now OVERDUE. Immediate action required.', 'urgent')}
+      ${getInfoBox([
+        { label: 'Invoice Number', value: data.invoiceNumber || 'N/A' },
+        { label: 'Client', value: data.clientCompany || 'N/A' },
+        { label: 'Project', value: data.projectName || 'N/A' },
+        { label: 'Invoice Amount', value: formatCurrency(data.invoiceAmount) },
+        { label: 'Original Due Date', value: formatDate(data.dueDate) },
+        { label: 'Days Overdue', value: `${data.daysOverdue || 0} days` },
+        { label: 'Contact Person', value: data.contactPerson || 'N/A' },
+        { label: 'Contact Email', value: data.contactEmail || 'N/A' },
+        { label: 'Contact Phone', value: data.contactPhone || 'N/A' }
+      ])}
+      
+      <div style="margin: 25px 0; padding: 20px; background-color: #fef2f2; border-radius: 6px; border: 1px solid #fecaca;">
+        <h3 style="margin: 0 0 10px 0; color: #991b1b; font-size: 16px;">⚠️ Escalation Required:</h3>
+        <ul style="margin: 10px 0; padding-left: 20px; color: #7f1d1d; font-size: 14px;">
+          <li style="margin: 5px 0;">Contact client immediately via phone</li>
+          <li style="margin: 5px 0;">Send formal overdue notice</li>
+          <li style="margin: 5px 0;">Consider suspending ongoing work if necessary</li>
+          <li style="margin: 5px 0;">Escalate to senior management</li>
+          <li style="margin: 5px 0;">Review payment terms for future projects</li>
+        </ul>
+      </div>
+      
+      <p style="margin: 20px 0; color: #dc2626; font-size: 15px; font-weight: 600;">
+        This requires immediate attention to maintain cash flow and client relationships.
+      </p>
+      
+      ${getButton('View Invoice & Take Action', `${DASHBOARD_URL}/invoices/${data.invoiceId}`, '#dc2626')}
+    `, 'URGENT: Overdue payment requires immediate action.')
+  },
+
+  // Keep existing templates
   'proposal.created': {
-    subject: '🎯 New Proposal Created: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #667eea; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #667eea; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .info-box strong { color: #333; }
-          .cta-button { display: inline-block; background: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .cta-button:hover { background: #5568d3; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-          .footer p { margin: 5px 0; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>🎯 New Proposal Created</h1>
-          </div>
-          <div class="content">
-            <h2>Proposal Submission Notification</h2>
-            <p>Dear Team,</p>
-            <p>A new proposal has been successfully created and requires your attention.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Created By:</strong> {{createdBy}}</p>
-              <p><strong>Date:</strong> {{date}}</p>
-              {{#if description}}<p><strong>Description:</strong> {{description}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Next Steps:</strong></p>
-            <ul>
-              <li><strong>Estimator:</strong> Please review and prepare estimation</li>
-              <li><strong>COO:</strong> Monitor proposal progress</li>
-              <li><strong>Director:</strong> Await estimation for review</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">View Proposal Details</a>
-            </center>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
+    subject: '📄 New Proposal Created: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        📄 New Proposal Created
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A new proposal has been submitted and requires your attention.
+      </p>
+      ${getInfoBox([
+        { label: 'Project Name', value: data.projectName || 'N/A' },
+        { label: 'Client', value: data.clientName || 'N/A' },
+        { label: 'Created By', value: data.createdBy || 'N/A' },
+        { label: 'Date', value: formatDate(new Date()) }
+      ])}
+      ${getStatusBanner('Please review the proposal and proceed with estimation.', 'info')}
+      ${getButton('View Proposal', DASHBOARD_URL)}
+    `, 'Please take necessary action on this proposal.')
   },
 
   'project.submitted': {
-    subject: '🎯 New Project Submitted: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #667eea; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #667eea; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .info-box strong { color: #333; }
-          .cta-button { display: inline-block; background: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .cta-button:hover { background: #5568d3; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-          .footer p { margin: 5px 0; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>🎯 New Project Submitted</h1>
-          </div>
-          <div class="content">
-            <h2>Project Submission Notification</h2>
-            <p>Dear Team,</p>
-            <p>A new project has been successfully submitted and requires your attention.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Submitted By:</strong> {{createdBy}}</p>
-              <p><strong>Date:</strong> {{date}}</p>
-              {{#if description}}<p><strong>Description:</strong> {{description}}</p>{{/if}}
-              {{#if clientName}}<p><strong>Client:</strong> {{clientName}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Next Steps:</strong></p>
-            <ul>
-              <li><strong>Estimator:</strong> Please review and prepare estimation</li>
-              <li><strong>COO:</strong> Monitor project progress</li>
-              <li><strong>Director:</strong> Await estimation for review</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">View Project Details</a>
-            </center>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
+    subject: '📋 Project Submitted for Review: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        📋 Project Submitted for Review
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A project has been submitted and is awaiting approval.
+      </p>
+      ${getInfoBox([
+        { label: 'Project Name', value: data.projectName || 'N/A' },
+        { label: 'Client', value: data.clientName || 'N/A' },
+        { label: 'Submitted By', value: data.createdBy || 'N/A' }
+      ])}
+      ${getButton('Review Project', DASHBOARD_URL)}
+    `)
   },
 
   'project.approved_by_director': {
     subject: '✅ Project Approved: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #11998e; font-size: 20px; margin-top: 0; }
-          .success-badge { background: #d4edda; color: #155724; padding: 10px 20px; border-radius: 25px; display: inline-block; font-weight: 600; margin: 15px 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #38ef7d; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .cta-button { display: inline-block; background: #11998e; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>✅ Project Approved</h1>
-          </div>
-          <div class="content">
-            <h2>Congratulations!</h2>
-            <center><span class="success-badge">APPROVED</span></center>
-            
-            <p>Dear Business Development Manager,</p>
-            <p>Great news! Your project has been approved by the Director and is ready to move forward.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Approved By:</strong> {{approvedBy}}</p>
-              <p><strong>Approval Date:</strong> {{date}}</p>
-              {{#if estimatedValue}}<p><strong>Estimated Value:</strong> {{estimatedValue}}</p>{{/if}}
-            </div>
-            
-            <p><strong>What's Next:</strong></p>
-            <ul>
-              <li>Coordinate with the project team for execution</li>
-              <li>Review project timeline and deliverables</li>
-              <li>Begin client communication for project kickoff</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">Access Project Dashboard</a>
-            </center>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'proposal.uploaded': {
-    subject: '📄 New Proposal Ready for Estimation: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #f5576c; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #f5576c; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .priority-badge { background: #fff3cd; color: #856404; padding: 8px 16px; border-radius: 20px; display: inline-block; font-weight: 600; font-size: 14px; }
-          .cta-button { display: inline-block; background: #f5576c; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>📄 Proposal Ready for Review</h1>
-          </div>
-          <div class="content">
-            <h2>Action Required: Estimation Needed</h2>
-            <center><span class="priority-badge">AWAITING ESTIMATION</span></center>
-            
-            <p>Dear Estimator,</p>
-            <p>A new proposal has been uploaded by the BDM and requires your estimation expertise.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Uploaded By:</strong> {{uploadedBy}}</p>
-              <p><strong>Upload Date:</strong> {{date}}</p>
-              {{#if clientName}}<p><strong>Client:</strong> {{clientName}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Your Task:</strong></p>
-            <ul>
-              <li>Review the proposal documents</li>
-              <li>Analyze requirements and specifications</li>
-              <li>Prepare detailed cost estimation</li>
-              <li>Submit estimation for COO review</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">Start Estimation</a>
-            </center>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'estimation.complete': {
-    subject: '💰 Estimation Complete: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #4facfe; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #00f2fe; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .priority-badge { background: #d1ecf1; color: #0c5460; padding: 8px 16px; border-radius: 20px; display: inline-block; font-weight: 600; font-size: 14px; }
-          .cta-button { display: inline-block; background: #4facfe; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>💰 Estimation Complete</h1>
-          </div>
-          <div class="content">
-            <h2>Ready for Pricing Review</h2>
-            <center><span class="priority-badge">AWAITING PRICING</span></center>
-            
-            <p>Dear COO,</p>
-            <p>The estimation phase for the following project has been completed and is ready for your pricing review.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Estimated By:</strong> {{estimatedBy}}</p>
-              <p><strong>Completion Date:</strong> {{date}}</p>
-              {{#if estimatedCost}}<p><strong>Estimated Cost:</strong> {{estimatedCost}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Required Actions:</strong></p>
-            <ul>
-              <li>Review the detailed estimation report</li>
-              <li>Analyze cost breakdown and margins</li>
-              <li>Set final pricing for the project</li>
-              <li>Allocate pricing to Director for approval</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">Review Estimation</a>
-            </center>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'pricing.allocated': {
-    subject: '📊 Pricing Allocated for Approval: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #fa709a; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #fee140; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .priority-badge { background: #fff3cd; color: #856404; padding: 8px 16px; border-radius: 20px; display: inline-block; font-weight: 600; font-size: 14px; }
-          .cta-button { display: inline-block; background: #fa709a; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>📊 Pricing Ready for Approval</h1>
-          </div>
-          <div class="content">
-            <h2>Director Approval Required</h2>
-            <center><span class="priority-badge">PENDING APPROVAL</span></center>
-            
-            <p>Dear Director,</p>
-            <p>The COO has completed the pricing review and allocated the project for your final approval.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Allocated By:</strong> {{allocatedBy}}</p>
-              <p><strong>Date:</strong> {{date}}</p>
-              {{#if finalPrice}}<p><strong>Final Price:</strong> {{finalPrice}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Your Review:</strong></p>
-            <ul>
-              <li>Review pricing structure and margins</li>
-              <li>Assess project feasibility and profitability</li>
-              <li>Approve or request revisions</li>
-              <li>Enable project progression upon approval</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">Review Project</a>
-            </center>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'project.won': {
-    subject: '🎉 Project Won: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #ffd89b 0%, #19547b 100%); color: white; padding: 40px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 28px; font-weight: 700; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #19547b; font-size: 20px; margin-top: 0; }
-          .celebration { text-align: center; font-size: 48px; margin: 20px 0; }
-          .success-badge { background: #d4edda; color: #155724; padding: 10px 20px; border-radius: 25px; display: inline-block; font-weight: 700; font-size: 16px; margin: 15px 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #ffd89b; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .cta-button { display: inline-block; background: #19547b; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>🎉 Congratulations! Project Won!</h1>
-          </div>
-          <div class="content">
-            <div class="celebration">🏆 🎊 ✨</div>
-            <h2>Excellent News!</h2>
-            <center><span class="success-badge">PROJECT WON</span></center>
-            
-            <p>Dear Team,</p>
-            <p>We are thrilled to announce that we have successfully won the following project! This is a significant achievement for our team.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Marked By:</strong> {{markedBy}}</p>
-              <p><strong>Date:</strong> {{date}}</p>
-              {{#if projectValue}}<p><strong>Project Value:</strong> {{projectValue}}</p>{{/if}}
-              {{#if clientName}}<p><strong>Client:</strong> {{clientName}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Next Steps:</strong></p>
-            <ul>
-              <li><strong>COO:</strong> Begin project allocation process</li>
-              <li><strong>Director:</strong> Oversee project initiation</li>
-              <li><strong>Team:</strong> Prepare for project kickoff</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">View Project Details</a>
-            </center>
-            
-            <p style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #f0f0f0; text-align: center; font-style: italic; color: #666;">
-              Great work, everyone! Let's deliver an outstanding project! 🚀
-            </p>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'project.allocated': {
-    subject: '🎯 Project Allocated to Design Team: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #667eea; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #764ba2; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .priority-badge { background: #e7e3fc; color: #5e35b1; padding: 8px 16px; border-radius: 20px; display: inline-block; font-weight: 600; font-size: 14px; }
-          .cta-button { display: inline-block; background: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>🎯 New Project Allocation</h1>
-          </div>
-          <div class="content">
-            <h2>Project Assigned to Design Team</h2>
-            <center><span class="priority-badge">ACTION REQUIRED</span></center>
-            
-            <p>Dear Design Manager,</p>
-            <p>The COO has allocated a new project to the design team. Please review and assign to appropriate designers.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Allocated By:</strong> {{allocatedBy}}</p>
-              <p><strong>Allocation Date:</strong> {{date}}</p>
-              {{#if priority}}<p><strong>Priority:</strong> {{priority}}</p>{{/if}}
-              {{#if deadline}}<p><strong>Deadline:</strong> {{deadline}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Your Responsibilities:</strong></p>
-            <ul>
-              <li>Review project requirements and scope</li>
-              <li>Assess team capacity and availability</li>
-              <li>Assign project to appropriate designer(s)</li>
-              <li>Set milestones and deliverable dates</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">Manage Allocation</a>
-            </center>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'designer.allocated': {
-    subject: '🎨 New Project Assigned: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #f5576c; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #f5576c; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .priority-badge { background: #ffe4e8; color: #c41e3a; padding: 8px 16px; border-radius: 20px; display: inline-block; font-weight: 600; font-size: 14px; }
-          .cta-button { display: inline-block; background: #f5576c; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>🎨 New Design Project</h1>
-          </div>
-          <div class="content">
-            <h2>Project Assigned to You</h2>
-            <center><span class="priority-badge">START DESIGNING</span></center>
-            
-            <p>Dear Designer,</p>
-            <p>You have been assigned a new project by the Design Manager. Please review the project details and begin work.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Assigned By:</strong> {{assignedBy}}</p>
-              <p><strong>Assignment Date:</strong> {{date}}</p>
-              {{#if deadline}}<p><strong>Deadline:</strong> {{deadline}}</p>{{/if}}
-              {{#if priority}}<p><strong>Priority Level:</strong> {{priority}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Getting Started:</strong></p>
-            <ul>
-              <li>Access project files and requirements</li>
-              <li>Review design specifications</li>
-              <li>Plan your design approach</li>
-              <li>Maintain regular progress updates</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">Access Project Files</a>
-            </center>
-            
-            <p style="margin-top: 20px; padding: 15px; background: #fff8e1; border-left: 4px solid #ffc107; border-radius: 4px;">
-              <strong>💡 Tip:</strong> Make sure to communicate with your Design Manager if you have any questions or need clarification on requirements.
-            </p>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'variation.allocated': {
-    subject: '🔄 Design Variation Allocated: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #f5576c; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #ff9800; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .warning-badge { background: #fff3cd; color: #856404; padding: 8px 16px; border-radius: 20px; display: inline-block; font-weight: 600; font-size: 14px; }
-          .cta-button { display: inline-block; background: #f5576c; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>🔄 Design Variation Request</h1>
-          </div>
-          <div class="content">
-            <h2>New Variation Allocated</h2>
-            <center><span class="warning-badge">REVIEW REQUIRED</span></center>
-            
-            <p>Dear Team,</p>
-            <p>A design variation has been allocated for the following project. This requires management review and approval.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Allocated By:</strong> {{allocatedBy}}</p>
-              <p><strong>Variation Date:</strong> {{date}}</p>
-              {{#if variationDetails}}<p><strong>Variation Details:</strong> {{variationDetails}}</p>{{/if}}
-              {{#if reason}}<p><strong>Reason:</strong> {{reason}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Action Items by Role:</strong></p>
-            <ul>
-              <li><strong>BDM:</strong> Review client requirements and impact</li>
-              <li><strong>COO:</strong> Assess resource and cost implications</li>
-              <li><strong>Director:</strong> Provide final approval or rejection</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">Review Variation</a>
-            </center>
-            
-            <p style="margin-top: 20px; padding: 15px; background: #ffebee; border-left: 4px solid #f44336; border-radius: 4px;">
-              <strong>⚠️ Important:</strong> Variations may impact timeline and budget. Please review carefully before approval.
-            </p>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'variation.approved': {
-    subject: '✅ Variation Approved: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #11998e; font-size: 20px; margin-top: 0; }
-          .success-badge { background: #d4edda; color: #155724; padding: 10px 20px; border-radius: 25px; display: inline-block; font-weight: 600; margin: 15px 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #38ef7d; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .cta-button { display: inline-block; background: #11998e; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>✅ Variation Approved</h1>
-          </div>
-          <div class="content">
-            <h2>Director Approval Received</h2>
-            <center><span class="success-badge">APPROVED</span></center>
-            
-            <p>Dear Team,</p>
-            <p>The design variation for the following project has been approved by the Director. You may proceed with implementation.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Approved By:</strong> {{approvedBy}}</p>
-              <p><strong>Approval Date:</strong> {{date}}</p>
-              {{#if variationDetails}}<p><strong>Approved Changes:</strong> {{variationDetails}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Next Steps:</strong></p>
-            <ul>
-              <li><strong>BDM:</strong> Communicate approved changes to client</li>
-              <li><strong>Design Team:</strong> Implement approved variations</li>
-              <li><strong>COO:</strong> Monitor progress and resource allocation</li>
-              <li><strong>Director:</strong> Track project timeline adjustments</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">View Updated Project</a>
-            </center>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'invoice.saved': {
-    subject: '💵 Invoice Saved: {{projectName}}',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .content h2 { color: #4facfe; font-size: 20px; margin-top: 0; }
-          .info-box { background: #f8f9fa; border-left: 4px solid #00f2fe; padding: 15px; margin: 20px 0; border-radius: 4px; }
-          .info-box p { margin: 8px 0; }
-          .info-badge { background: #e3f2fd; color: #1976d2; padding: 8px 16px; border-radius: 20px; display: inline-block; font-weight: 600; font-size: 14px; }
-          .cta-button { display: inline-block; background: #4facfe; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: 600; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>💵 Invoice Notification</h1>
-          </div>
-          <div class="content">
-            <h2>New Invoice Saved</h2>
-            <center><span class="info-badge">INVOICE CREATED</span></center>
-            
-            <p>Dear Team,</p>
-            <p>An invoice has been saved for the following project by the accounts team. Please review for your records.</p>
-            
-            <div class="info-box">
-              <p><strong>Project Name:</strong> {{projectName}}</p>
-              <p><strong>Invoice Number:</strong> {{invoiceNumber}}</p>
-              <p><strong>Created By:</strong> {{createdBy}}</p>
-              <p><strong>Date:</strong> {{date}}</p>
-              {{#if invoiceAmount}}<p><strong>Amount:</strong> {{invoiceAmount}}</p>{{/if}}
-            </div>
-            
-            <p><strong>Notification Recipients:</strong></p>
-            <ul>
-              <li><strong>BDM:</strong> For client communication and follow-up</li>
-              <li><strong>COO:</strong> For financial tracking and oversight</li>
-              <li><strong>Director:</strong> For project status awareness</li>
-            </ul>
-            
-            <center>
-              <a href="{{dashboardUrl}}" class="cta-button">View Invoice Details</a>
-            </center>
-            
-            <p style="margin-top: 20px; padding: 15px; background: #e8f5e9; border-left: 4px solid #4caf50; border-radius: 4px;">
-              <strong>📌 Note:</strong> This invoice has been recorded in the system. Ensure proper follow-up for payment collection.
-            </p>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-            <p>This is an automated notification. Please do not reply to this email.</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
-  },
-
-  'default': {
-    subject: 'Notification from EB-Tracker',
-    html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <style>
-          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
-          .container { max-width: 600px; margin: 20px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-          .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px 20px; text-align: center; }
-          .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-          .content { padding: 30px 20px; }
-          .footer { background: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #666; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>System Notification</h1>
-          </div>
-          <div class="content">
-            <p>An event occurred in the EB-Tracker system:</p>
-            <p><strong>Event:</strong> {{event}}</p>
-          </div>
-          <div class="footer">
-            <p><strong>EB-Tracker</strong> | Project Management System</p>
-          </div>
-        </div>
-      </body>
-      </html>
-    `
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ✅ Project Approved by Director
+      </h2>
+      ${getStatusBanner('Congratulations! Your project has been approved.', 'success')}
+      ${getInfoBox([
+        { label: 'Project Name', value: data.projectName || 'N/A' },
+        { label: 'Client', value: data.clientName || 'N/A' },
+        { label: 'Approved By', value: 'Director' }
+      ])}
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        The project is now ready to move to the next phase. Please proceed with the necessary arrangements.
+      </p>
+      ${getButton('View Project', DASHBOARD_URL)}
+    `)
   }
 };
 
-/**
- * Fetches email addresses from Firestore based on user roles.
- */
+// ==========================================
+// HELPER FUNCTIONS
+// ==========================================
 async function getEmailsForRoles(roles) {
-  if (!roles || roles.length === 0) {
-    return [];
-  }
+  if (!roles || roles.length === 0) return [];
   try {
-    const normalizedRoles = roles.map(r => r.toLowerCase());
-    const q = db.collection('users').where('role', 'in', normalizedRoles);
-    const snapshot = await q.get();
-    
-    if (snapshot.empty) {
-      console.log('No users found for roles:', roles);
-      return [];
-    }
-    const emails = snapshot.docs.map(doc => doc.data().email).filter(Boolean);
-    return [...new Set(emails)];
+    const normalizedRoles = roles.map(r => r.toLowerCase().trim());
+    console.log(`🔍 Looking up roles: ${normalizedRoles.join(', ')}`);
+    const snapshot = await db.collection('users').where('role', 'in', normalizedRoles).get();
+    return snapshot.docs.map(doc => doc.data().email).filter(e => e && e.includes('@'));
   } catch (error) {
-    console.error('Error fetching emails for roles:', error);
+    console.error('❌ Error fetching role emails:', error.message);
     return [];
   }
 }
 
-/**
- * Fetches email of the BDM who created a specific project
- */
-async function getBDMEmailForProject(projectId) {
-  if (!projectId) return null;
+async function getBDMEmail(projectId, proposalId) {
   try {
-    const projectDoc = await db.collection('projects').doc(projectId).get();
-    if (!projectDoc.exists) {
-      console.log('Project not found:', projectId);
-      return null;
+    let uid = null;
+    if (proposalId) {
+       const doc = await db.collection('proposals').doc(proposalId).get();
+       if (doc.exists) uid = doc.data().createdByUid;
     }
-    const createdBy = projectDoc.data().createdBy; // Assuming you store user ID or email
-    if (!createdBy) return null;
-    
-    // If createdBy is already an email
-    if (createdBy.includes('@')) return createdBy;
-    
-    // Otherwise, fetch user by ID
-    const userDoc = await db.collection('users').doc(createdBy).get();
-    if (!userDoc.exists) return null;
-    
-    return userDoc.data().email;
-  } catch (error) {
-    console.error('Error fetching BDM email:', error);
-    return null;
+    if (!uid && projectId) {
+       const doc = await db.collection('projects').doc(projectId).get();
+       if (doc.exists) uid = doc.data().bdmUid || doc.data().createdBy;
+    }
+    if (uid) {
+       const userDoc = await db.collection('users').doc(uid).get();
+       if (userDoc.exists) return userDoc.data().email;
+    }
+  } catch (e) {
+    console.error("⚠️ Error fetching BDM email:", e.message);
   }
+  return null;
 }
 
-/**
- * Template interpolator - replaces {{key}} with data[key]
- * Supports simple conditionals like {{#if key}}...{{/if}}
- */
+async function getDesignManagerEmail(projectId) {
+  try {
+    if (projectId) {
+      const doc = await db.collection('projects').doc(projectId).get();
+      if (doc.exists && doc.data().designManagerUid) {
+        const userDoc = await db.collection('users').doc(doc.data().designManagerUid).get();
+        if (userDoc.exists) return userDoc.data().email;
+      }
+    }
+  } catch (e) {
+    console.error("⚠️ Error fetching Design Manager email:", e.message);
+  }
+  return null;
+}
+
 function interpolate(template, data) {
-  if (!data) return template;
-  
-  const enhancedData = { 
-    ...data, 
-    event: data.event || 'Unknown Event',
-    dashboardUrl: data.dashboardUrl || process.env.DASHBOARD_URL || 'https://yourapp.com/dashboard'
-  };
-
-  // Handle simple conditionals {{#if key}}...{{/if}}
-  let result = template.replace(/\{\{#if\s+(\w+)\}\}([\s\S]*?)\{\{\/if\}\}/g, (match, key, content) => {
-    return enhancedData[key] ? content : '';
-  });
-
-  // Replace variables {{key}}
-  result = result.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-    return enhancedData[key] || '';
-  });
-
+  let result = template || '';
+  for (const key in data) {
+    result = result.replace(new RegExp(`{{${key}}}`, 'g'), data[key] || 'N/A');
+  }
   return result;
 }
 
-// --- THIS IS THE NEW EXPORTABLE FUNCTION ---
+// ==========================================
+// MAIN SEND FUNCTION (EXPORTED)
+// ==========================================
 async function sendEmailNotification(event, data) {
-  if (!event) {
-    throw new Error('Event name is required.');
+  console.log(`\n📨 --- START EMAIL: [${event}] ---`);
+
+  if (!process.env.RESEND_API_KEY) {
+      console.error('⛔ CRITICAL: RESEND_API_KEY is missing!');
+      return { success: false, error: 'Missing API Key' };
   }
+  const resend = new Resend(process.env.RESEND_API_KEY);
 
-  console.log(`Processing event: ${event}`);
+  // 1. Get Recipients
+  const roles = EMAIL_RECIPIENT_MAP[event] || [];
+  let recipients = await getEmailsForRoles(roles);
 
-  // Get roles and template
-  const rolesToNotify = EMAIL_RECIPIENT_MAP[event] || [];
-  const template = EMAIL_TEMPLATE_MAP[event] || EMAIL_TEMPLATE_MAP['default'];
-
-  // Get email addresses from Firestore based on roles
-  let recipientEmails = await getEmailsForRoles(rolesToNotify);
-  console.log('📋 Initial recipients from roles:', recipientEmails);
-  console.log('📦 Received data:', JSON.stringify(data, null, 2));
-
-  // --- SPECIAL CASES ---
+  // 2. Dynamic Additions based on event type
   
-  // 1. Proposal/Project created - add BDM who created it
-  if (event === 'proposal.created' || event === 'project.submitted') {
-    console.log('🔍 Processing BDM email for project submission...');
-    console.log('🔑 data.createdByEmail =', data?.createdByEmail);
-    
-    if (data && data.createdByEmail) {
-      console.log('✅ Found createdByEmail, adding to recipients:', data.createdByEmail);
-      recipientEmails.push(data.createdByEmail);
-    } else {
-      console.log('❌ No createdByEmail provided in data');
+  // Add BDM for relevant events
+  if (['proposal.created', 'project.submitted', 'project.approved_by_director', 
+       'variation.approved', 'variation.approved_detail', 'invoice.saved', 
+       'invoice.created', 'invoice.payment_due', 'invoice.overdue'].includes(event)) {
+      let bdmEmail = data.createdByEmail || data.bdmEmail;
+      if (!bdmEmail) bdmEmail = await getBDMEmail(data.projectId, data.proposalId);
       
-      if (data && data.projectId) {
-        console.log('🔍 Attempting to fetch BDM from projectId:', data.projectId);
-        // Fallback: try to get BDM from project document
-        const bdmEmail = await getBDMEmailForProject(data.projectId);
-        if (bdmEmail) {
-          console.log('✅ Found BDM email from project document:', bdmEmail);
-          recipientEmails.push(bdmEmail);
-        } else {
-          console.log('❌ Could not find BDM email from project document');
-        }
-      } else {
-        console.log('⚠️ No projectId provided either - cannot fetch BDM email');
+      if (bdmEmail) {
+          recipients.push(bdmEmail);
+          console.log(`👤 Added BDM: ${bdmEmail}`);
       }
-    }
   }
-
-  // 2. Project approved - send to BDM who created the project
-  // --- THIS IS THE UPDATED BLOCK ---
-  if (event === 'project.approved_by_director') {
-    let bdmEmail = null;
-    if (data && data.createdByEmail) {
-      // Priority 1: Use the email provided in the data payload
-      console.log('✅ Found createdByEmail in payload for approval:', data.createdByEmail);
-      bdmEmail = data.createdByEmail;
-    } else if (data && data.projectId) {
-      // Priority 2: Fallback to finding BDM from the project ID
-      console.log('🔍 No createdByEmail, checking projectId:', data.projectId);
-      bdmEmail = await getBDMEmailForProject(data.projectId);
-    }
-    
-    if (bdmEmail) {
-      recipientEmails = [bdmEmail]; // Only send to this specific BDM
-    } else {
-      console.warn(`No BDM email found for project.approved_by_director. Data:`, data);
-    }
-  }
-  // --- END OF UPDATED BLOCK ---
-
-  // 3. Designer allocated - send to specific designer
-  if (event === 'designer.allocated' && data && data.designerEmail) {
-    recipientEmails.push(data.designerEmail);
-  }
-
-  // 4. Variation allocated/approved - add project BDM
-  if ((event === 'variation.allocated' || event === 'variation.approved') && data && data.projectId) {
-    const projectBDMEmail = await getBDMEmailForProject(data.projectId);
-    if (projectBDMEmail) {
-      recipientEmails.push(projectBDMEmail);
-    }
-  }
-
-  // 5. Invoice saved - add project BDM
-  if (event === 'invoice.saved' && data && data.projectId) {
-    const projectBDMEmail = await getBDMEmailForProject(data.projectId);
-    if (projectBDMEmail) {
-      recipientEmails.push(projectBDMEmail);
-    }
-  }
-
-  // Remove duplicates
-  const uniqueEmails = [...new Set(recipientEmails)];
-  console.log('📧 Final unique recipients:', uniqueEmails);
-  console.log('📊 Recipient count:', uniqueEmails.length);
   
-  if (uniqueEmails.length === 0) {
-    console.log(`No recipients found for event: ${event}`);
+  // Add Design Manager for relevant events
+  if (['project.allocated', 'time_request.created', 'time_request.approved', 
+       'time_request.rejected'].includes(event)) {
+      let designManagerEmail = data.designManagerEmail;
+      if (!designManagerEmail) designManagerEmail = await getDesignManagerEmail(data.projectId);
+      
+      if (designManagerEmail) {
+          recipients.push(designManagerEmail);
+          console.log(`👔 Added Design Manager: ${designManagerEmail}`);
+      }
+  }
+  
+  // Add Designer for relevant events
+  if (['designer.allocated', 'time_request.approved', 'time_request.rejected'].includes(event) 
+      && data.designerEmail) {
+      recipients.push(data.designerEmail);
+      console.log(`🎨 Added Designer: ${data.designerEmail}`);
+  }
+
+  // 3. Clean List
+  recipients = [...new Set(recipients.filter(e => e && e.includes('@')))];
+
+  if (recipients.length === 0) {
+      console.warn(`⚠️ No valid recipients for '${event}'. Skipping.`);
+      console.log('📨 --- END EMAIL (SKIPPED) ---\n');
+      return { success: false, message: 'No recipients found' };
+  }
+
+  // 4. Build Email
+  try {
+    const tmpl = EMAIL_TEMPLATE_MAP[event] || EMAIL_TEMPLATE_MAP['default'];
+    
+    // Generate HTML (templates are now functions)
+    const html = typeof tmpl.html === 'function' ? tmpl.html(data) : interpolate(tmpl.html, data);
+    const subject = interpolate(tmpl.subject, data);
+
+    console.log(`🚀 Sending from [${FROM_EMAIL}] to [${recipients.length}] recipients...`);
+    console.log(`📧 Recipients: ${recipients.join(', ')}`);
+    
+    // 5. Send via Resend
+    const result = await resend.emails.send({
+      from: FROM_EMAIL,
+      to: recipients,
+      subject: subject,
+      html: html
+    });
+
+    if (result.error) {
+        throw new Error(result.error.message);
+    }
+
+    console.log(`✅ SENT! ID: ${result.data?.id}`);
+    console.log('📨 --- END EMAIL (SUCCESS) ---\n');
     return { 
-      message: 'Event processed, but no email recipients found.',
-      event: event 
+      success: true, 
+      id: result.data?.id, 
+      recipients: recipients.length,
+      recipientList: recipients 
     };
+
+  } catch (error) {
+    console.error('❌ RESEND FAILED:', error.message);
+    console.log('📨 --- END EMAIL (FAILED) ---\n');
+    return { success: false, error: error.message };
   }
-
-  // Prepare email content
-  const subject = interpolate(template.subject, { ...data, event });
-  const htmlContent = interpolate(template.html, { ...data, event });
-  const fromEmail = process.env.YOUR_VERIFIED_DOMAIN_EMAIL || 'notifications@ebtracker.com';
-
-  // Send email via Resend
-  const { data: sendData, error: sendError } = await resend.emails.send({
-    from: `EB-Tracker <${fromEmail}>`,
-    to: uniqueEmails,
-    subject: subject,
-    html: htmlContent,
-  });
-
-  if (sendError) {
-    console.error('Resend Error:', sendError);
-    throw new Error(`Failed to send email: ${sendError.message}`);
-  }
-
-  console.log(`Email sent successfully for event: ${event}`);
-  return { 
-    event: event,
-    recipientCount: uniqueEmails.length,
-    sendId: sendData.id 
-  };
 }
-// --- END OF NEW EXPORTABLE FUNCTION ---
 
-
-// --- THE API ENDPOINT (Now simplified) ---
+// ==========================================
+// API ENDPOINT
+// ==========================================
 emailRouter.post('/trigger', async (req, res) => {
   try {
     const { event, data } = req.body;
-
+    
     if (!event) {
-      return res.status(400).json({ error: 'Event name is required.' });
+      return res.status(400).json({ error: 'Event type is required' });
     }
-
-    // Call the new, reusable function
-    const result = await sendEmailNotification(event, data);
-
-    res.status(200).json({ 
-      message: 'Email(s) sent successfully.',
-      ...result
-    });
-
-  } catch (error) {
-    console.error('Server Error in /email/trigger:', error);
-    res.status(500).json({ 
-      error: 'Internal server error.',
-      details: error.message 
-    });
+    
+    const result = await sendEmailNotification(event, data || {});
+    res.json(result);
+  } catch (e) {
+    console.error('API Error:', e);
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Test endpoint
-emailRouter.get('/', (req, res) => {
-  res.status(200).json({ 
-    message: 'Email API is active.',
-    availableEvents: Object.keys(EMAIL_RECIPIENT_MAP),
-    usage: 'POST /api/email/trigger with { event, data }'
-  });
-});
-
-// Health check
+// Health check endpoint
 emailRouter.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'healthy',
-    service: 'Email API',
-    timestamp: new Date().toISOString()
+  res.json({ 
+    status: 'ok', 
+    service: 'email-notifications',
+    from: FROM_EMAIL,
+    hasApiKey: !!process.env.RESEND_API_KEY
   });
 });
 
-// --- EXPORT BOTH THE ROUTER AND THE NEW FUNCTION ---
-module.exports = {
-  emailHandler: emailRouter, // Keep original export name for server.js
-  sendEmailNotification     // Export the new function
-};
+module.exports = { emailHandler: emailRouter, sendEmailNotification };
