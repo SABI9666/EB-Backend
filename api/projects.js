@@ -1,7 +1,8 @@
-// api/projects.js - CONSOLIDATED with variation code generator
+// api/projects.js - CONSOLIDATED with variation code generator + EMAIL NOTIFICATIONS
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
+const { sendEmailNotification } = require('./email'); // ✅ EMAIL IMPORT ADDED
 
 const db = admin.firestore();
 
@@ -56,7 +57,7 @@ const handler = async (req, res) => {
         // GET - Retrieve projects OR generate variation code
         // ============================================
         if (req.method === 'GET') {
-            const { id, action, parentId, status } = req.query; // Added 'status' query param
+            const { id, action, parentId, status } = req.query;
 
             // ================================================
             // NEW: Generate Variation Code Logic
@@ -80,7 +81,7 @@ const handler = async (req, res) => {
                     .get();
     
                 let maxNum = 0;
-                const variationRegex = /-V(\d+)$/; // Regex to find "-V" followed by digits at the end
+                const variationRegex = /-V(\d+)$/;
     
                 variationsSnapshot.forEach(doc => {
                     const data = doc.data();
@@ -99,100 +100,43 @@ const handler = async (req, res) => {
                 const newVariationNum = maxNum + 1;
                 const newVariationCode = `${baseProjectCode}-V${newVariationNum}`;
     
-                return res.status(200).json({ success: true, data: { variationCode: newVariationCode } });
+                return res.status(200).json({
+                    success: true,
+                    variationCode: newVariationCode,
+                    variationNumber: newVariationNum
+                });
             }
 
-            // ================================================
-            // Get Single Project by ID
-            // ================================================
-            else if (id) {
-                const doc = await db.collection('projects').doc(id).get();
-                if (!doc.exists) {
+            // Get single project by ID
+            if (id) {
+                const projectDoc = await db.collection('projects').doc(id).get();
+                if (!projectDoc.exists) {
                     return res.status(404).json({ success: false, error: 'Project not found' });
                 }
                 
-                const projectData = { id: doc.id, ...doc.data() };
-                
-                // Check access based on role and allocation
-                if (req.user.role === 'design_lead' && projectData.designLeadUid !== req.user.uid) {
-                    return res.status(403).json({ 
-                        success: false, 
-                        error: 'You are not allocated to this project' 
-                    });
-                }
-                
-                if (req.user.role === 'designer' && !(projectData.assignedDesigners || []).includes(req.user.uid)) {
-                    return res.status(403).json({ 
-                        success: false, 
-                        error: 'You are not assigned to this project' 
-                    });
-                }
-                
-                // Load tasks for this project
-                const tasksSnapshot = await db.collection('tasks')
-                    .where('projectId', '==', id)
-                    .get();
-                projectData.tasks = tasksSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-                
-                // Load deliverables for this project
-                const deliverablesSnapshot = await db.collection('deliverables')
-                    .where('projectId', '==', id)
-                    .orderBy('uploadedAt', 'desc')
-                    .get();
-                projectData.deliverables = deliverablesSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-                
-                // Load BDM files if Design Lead or Designer
-                if (['design_lead', 'designer'].includes(req.user.role)) {
-                    const filesSnapshot = await db.collection('files')
-                        .where('proposalId', '==', projectData.proposalId)
-                        .get();
-                    projectData.bdmFiles = filesSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-                }
-                
-                return res.status(200).json({ success: true, data: projectData });
+                return res.status(200).json({ 
+                    success: true, 
+                    data: { id: projectDoc.id, ...projectDoc.data() }
+                });
             }
             
-            // ================================================
-            // Get All Projects (with role-based filtering)
-            // ================================================
-            else {
-                let query = db.collection('projects').orderBy('createdAt', 'desc');
-                
-                // Design Leads ONLY see projects allocated to them by COO
-                if (req.user.role === 'design_lead') {
-                    query = query.where('designLeadUid', '==', req.user.uid)
-                                .where('status', 'in', ['assigned', 'in_progress', 'completed']);
-                }
-                
-                // Designer: Only projects where they are assigned by Design Lead
-                else if (req.user.role === 'designer') {
-                    // Check for the specific query param from showTasks()
-                    if (req.query.assignedToMe === 'true') {
-                         query = query.where('assignedDesigners', 'array-contains', req.user.uid);
-                    }
-                    // Otherwise, a general 'designer' GET might return nothing or be forbidden
-                }
-                
-                // BDM: Only their own projects
-                else if (req.user.role === 'bdm') {
-                    query = query.where('bdmUid', '==', req.user.uid);
-                }
-                
-                // Accounts: Filter by status if requested (e.g., 'completed')
-                if (req.user.role === 'accounts' && status) {
-                    query = query.where('status', '==', status);
-                }
-                
-                // COO, Director: See all projects (no filter needed, unless they filter)
-                if ((req.user.role === 'coo' || req.user.role === 'director') && status) {
-                     query = query.where('status', '==', status);
-                }
-                
-                const snapshot = await query.get();
-                const projects = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                
-                return res.status(200).json({ success: true, data: projects });
+            // Get all projects (with optional status filter)
+            let query = db.collection('projects').orderBy('createdAt', 'desc');
+            
+            if (status) {
+                query = query.where('status', '==', status);
             }
+            
+            const snapshot = await query.get();
+            const projects = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            
+            return res.status(200).json({ 
+                success: true, 
+                data: projects 
+            });
         }
 
         // ============================================
@@ -240,8 +184,8 @@ const handler = async (req, res) => {
                 if (proposal.projectCreated && proposal.projectId) {
                     const existingProjectDoc = await db.collection('projects').doc(proposal.projectId).get();
                     if(existingProjectDoc.exists) {
-                        return res.status(200).json({ // Return 200 OK, but indicate it already exists
-                            success: true, // Not a failure, just already done
+                        return res.status(200).json({
+                            success: true,
                             message: 'Project already exists for this proposal',
                             projectId: proposal.projectId 
                         });
@@ -257,13 +201,13 @@ const handler = async (req, res) => {
                     clientContact: proposal.clientContact || '',
                     clientEmail: proposal.clientEmail || '',
                     clientPhone: proposal.clientPhone || '',
-                    location: proposal.country || '', // Use 'country' from proposal
+                    location: proposal.country || '',
                     bdmName: proposal.createdByName || 'Unknown',
                     bdmUid: proposal.createdByUid || '',
                     bdmEmail: proposal.createdByEmail || proposal.bdmEmail || '',
                     quoteValue: proposal.pricing?.quoteValue || 0,
                     currency: proposal.pricing?.currency || 'USD',
-                    status: 'pending_allocation', // Changed from 'pending'
+                    status: 'pending_allocation',
                     designStatus: 'not_started',
                     
                     // Initialize all hour fields
@@ -437,6 +381,31 @@ const handler = async (req, res) => {
                     });
                 }
                 
+                // ✅ SEND EMAIL NOTIFICATION TO DESIGN MANAGER + COO
+                console.log('\n📧 Sending project allocation email...');
+                try {
+                    const emailResult = await sendEmailNotification('project.allocated', {
+                        projectName: project.projectName || 'Project',
+                        clientName: project.clientCompany || project.clientName || 'Client',
+                        designManagerEmail: designLeadData.email,  // ⚠️ CRITICAL
+                        designManager: designLeadData.name,
+                        projectValue: project.quoteValue || 'N/A',
+                        startDate: data.projectStartDate ? new Date(data.projectStartDate).toLocaleDateString() : 'TBD',
+                        projectId: id
+                    });
+                    
+                    console.log('📬 Email Result:', emailResult);
+                    
+                    if (emailResult.success) {
+                        console.log(`✅ Email sent to ${emailResult.recipients} recipients`);
+                    } else {
+                        console.error('⚠️ Email failed:', emailResult.error);
+                    }
+                } catch (emailError) {
+                    console.error('❌ Email error:', emailError);
+                    // Don't fail the allocation just because email failed
+                }
+                
             } 
             
             // Design Lead assigning designers
@@ -457,8 +426,18 @@ const handler = async (req, res) => {
                 }
                 
                 const designerUids = data.designerUids || [];
-                const designerHoursMap = data.designerHours || {}; // e.g., { "uid1": 8, "uid2": 10 }
-                const totalAllocatedHours = data.totalAllocatedHours || 0; // Total
+                const designerNames = data.designerNames || [];
+                const designerEmails = data.designerEmails || [];
+                const designerHoursMap = data.designerHours || {};
+                const totalAllocatedHours = data.totalAllocatedHours || 0;
+                
+                // Validate at least one designer is selected
+                if (designerUids.length === 0) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'At least one designer must be assigned'
+                    });
+                }
                 
                 const validatedDesigners = [];
                 
@@ -472,14 +451,17 @@ const handler = async (req, res) => {
                 }
                 
                 // Validate all designers from database
-                for (const uid of designerUids) {
+                for (let i = 0; i < designerUids.length; i++) {
+                    const uid = designerUids[i];
                     const userDoc = await db.collection('users').doc(uid).get();
+                    
                     if (!userDoc.exists) {
                         return res.status(400).json({
                             success: false,
-                            error: `User ${uid} not found`
+                            error: `Designer not found: ${designerNames[i] || uid}`
                         });
                     }
+                    
                     const userData = userDoc.data();
                     if (userData.role !== 'designer') {
                         return res.status(400).json({
@@ -487,11 +469,54 @@ const handler = async (req, res) => {
                             error: `User ${userData.name} is not a designer`
                         });
                     }
+                    
+                    // Use email from frontend or Firestore
+                    const designerEmail = designerEmails[i] || userData.email;
+                    
                     validatedDesigners.push({
                         uid: uid,
                         name: userData.name,
-                        email: userData.email
+                        email: designerEmail
                     });
+                    
+                    // Notify each designer
+                    notifications.push({
+                        type: 'project_assigned',
+                        recipientUid: uid,
+                        recipientRole: 'designer',
+                        message: `New project assigned: "${project.projectName}" (${designerHoursMap[uid] || 0} hours allocated)`,
+                        projectId: id,
+                        projectName: project.projectName,
+                        clientCompany: project.clientCompany,
+                        assignedBy: req.user.name,
+                        allocatedHours: designerHoursMap[uid] || 0,
+                        priority: 'high'
+                    });
+                    
+                    // ✅ SEND EMAIL NOTIFICATION TO DESIGNER + COO
+                    console.log(`\n📧 Sending designer allocation email for ${userData.name}...`);
+                    try {
+                        const emailResult = await sendEmailNotification('designer.allocated', {
+                            projectName: project.projectName || 'Project',
+                            clientName: project.clientCompany || project.clientName || 'Client',
+                            designerEmail: designerEmail,  // ⚠️ CRITICAL
+                            designerRole: 'Designer',
+                            designManager: project.designLeadName || req.user.name,
+                            allocatedBy: req.user.name,
+                            projectId: id
+                        });
+                        
+                        console.log('📬 Email Result:', emailResult);
+                        
+                        if (emailResult.success) {
+                            console.log(`✅ Email sent to ${emailResult.recipients} recipients`);
+                        } else {
+                            console.error('⚠️ Email failed:', emailResult.error);
+                        }
+                    } catch (emailError) {
+                        console.error('❌ Email error:', emailError);
+                        // Don't fail the assignment just because email failed
+                    }
                 }
                 
                 updates = {
@@ -501,33 +526,16 @@ const handler = async (req, res) => {
                     assignmentDate: admin.firestore.FieldValue.serverTimestamp(),
                     assignedBy: req.user.name,
                     assignedByUid: req.user.uid,
-                    assignedDesignerHours: designerHoursMap, // Store the map
-                    totalAllocatedHours: totalAllocatedHours, // Store the calculated total
-                    hoursLogged: 0, // Reset or initialize hours logged when re-assigning
+                    assignedDesignerHours: designerHoursMap,
+                    totalAllocatedHours: totalAllocatedHours,
+                    hoursLogged: 0,
                     status: 'in_progress',
                     designStatus: 'in_progress'
                 };
                 
                 activityDetail = `Designers assigned: ${validatedDesigners.map(d => d.name).join(', ')} with a total of ${totalAllocatedHours} hours.`;
-                
-                // Notify each designer
-                for (const designer of validatedDesigners) {
-                    notifications.push({
-                        type: 'project_assigned',
-                        recipientUid: designer.uid,
-                        recipientRole: 'designer',
-                        message: `New project assigned: "${project.projectName}" (${designerHoursMap[designer.uid] || 0} hours allocated)`,
-                        projectId: id,
-                        projectName: project.projectName,
-                        clientCompany: project.clientCompany,
-                        assignedBy: req.user.name,
-                        allocatedHours: designerHoursMap[designer.uid] || 0,
-                        priority: 'high'
-                    });
-                }
             }
 
-            // *** START OF FIX ***
             // Design Lead/Manager marking project as complete
             else if (action === 'mark_complete') {
                 // Only allocated Design Lead, COO, or Director can complete
@@ -578,7 +586,6 @@ const handler = async (req, res) => {
                     });
                 }
             }
-            // *** END OF FIX ***
             
             else {
                 return res.status(400).json({ 
@@ -648,16 +655,6 @@ const handler = async (req, res) => {
             // Delete the project
             await projectRef.delete();
             
-            // If there's a linked proposal, update it
-            if (project.proposalId) {
-                await db.collection('proposals').doc(project.proposalId).update({
-                    projectCreated: false,
-                    projectId: null,
-                    allocationStatus: null,
-                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                });
-            }
-            
             // Log activity
             await db.collection('activities').add({
                 type: 'project_deleted',
@@ -666,7 +663,8 @@ const handler = async (req, res) => {
                 performedByRole: req.user.role,
                 performedByUid: req.user.uid,
                 timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                projectId: id
+                projectId: id,
+                projectName: project.projectName
             });
             
             return res.status(200).json({ 
@@ -675,14 +673,16 @@ const handler = async (req, res) => {
             });
         }
 
-        return res.status(405).json({ success: false, error: 'Method not allowed' });
-        
+        return res.status(405).json({ 
+            success: false, 
+            error: 'Method not allowed' 
+        });
+
     } catch (error) {
-        console.error('Projects API error:', error);
+        console.error('Error in projects handler:', error);
         return res.status(500).json({ 
             success: false, 
-            error: 'Internal Server Error', 
-            message: error.message 
+            error: error.message 
         });
     }
 };
