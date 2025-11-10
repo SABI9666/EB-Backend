@@ -416,14 +416,14 @@ const EMAIL_TEMPLATE_MAP = {
     `, 'Please take necessary action on this proposal.')
   },
 
-  'project.submitted': {
-    subject: '📋 Project Submitted for Review: {{projectName}}',
+ 'project.submitted': {
+    subject: '📋 Bid Submitted for Review: {{projectName}}',
     html: (data) => getEmailWrapper(`
       <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
-        📋 Project Submitted for Review
+        📋 Bid Submitted for Review
       </h2>
       <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        A project has been submitted and is awaiting approval.
+        A bid has been submitted and is awaiting approval.
       </p>
       ${getInfoBox([
         { label: 'Project Name', value: data.projectName || 'N/A' },
