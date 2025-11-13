@@ -281,7 +281,7 @@ const handler = async (req, res) => {
                         return res.status(403).json({ success: false, error: 'Only Estimator or COO can add estimation' });
                     }
                     
-                    // ✅ START OF FIX
+                    // ✅ This is your new logic that saves all fields
                     // The 'data' object IS the estimation object.
                     // We just need to add the server-side fields to it.
                     updates = {
@@ -298,7 +298,7 @@ const handler = async (req, res) => {
                     };
                     // Use the correct field for the activity log
                     activityDetail = `Estimation completed: ${data.totalHours || data.manhours || 0} manhours`;
-                    // ✅ END OF FIX
+                    // ✅ End of new logic
                     
                     await db.collection('notifications').add({
                         type: 'estimation_complete',
