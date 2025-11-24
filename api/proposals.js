@@ -268,23 +268,57 @@ const handler = async (req, res) => {
                     if (req.user.role !== 'estimator') {
                         return res.status(403).json({ success: false, error: 'Only Estimators can add estimation' });
                     }
-                    if (!data || !data.manhours) {
-                        return res.status(400).json({ success: false, error: 'Missing estimation data' });
+                    
+                    // Validate: Must have either manhours OR tonnage (or both)
+                    const manhours = parseFloat(data.manhours) || parseFloat(data.totalHours) || 0;
+                    const tonnage = parseFloat(data.tonnage) || 0;
+                    
+                    if (!data || (manhours === 0 && tonnage === 0)) {
+                        return res.status(400).json({ 
+                            success: false, 
+                            error: 'Missing estimation data: Please provide either manhours or tonnage' 
+                        });
                     }
+                    
+                    if (!data.services || data.services.length === 0) {
+                        return res.status(400).json({ 
+                            success: false, 
+                            error: 'Please select at least one service' 
+                        });
+                    }
+                    
+                    // Store breakdown if provided
+                    const breakdown = {
+                        designHours: parseFloat(data.designHours) || 0,
+                        detailingHours: parseFloat(data.detailingHours) || 0,
+                        checkingHours: parseFloat(data.checkingHours) || 0,
+                        revisionHours: parseFloat(data.revisionHours) || 0,
+                        pmHours: parseFloat(data.pmHours) || 0
+                    };
+                    
                     updates = {
                         estimation: {
-                            manhours: parseFloat(data.manhours),
-                            tonnage: parseFloat(data.tonnage) || 0,
+                            manhours: manhours,
+                            totalHours: manhours, // Also store as totalHours for compatibility
+                            tonnage: tonnage,
                             services: data.services || [],
                             estimatedBy: req.user.email,
                             estimatorName: req.user.name,
                             estimatedAt: admin.firestore.FieldValue.serverTimestamp(),
-                            breakdown: data.breakdown || {},
+                            breakdown: breakdown,
                             notes: data.notes || ''
                         },
                         status: 'estimated'
                     };
-                    activityDetail = `Estimation added: ${data.manhours} manhours`;
+                    
+                    // Create activity detail based on what was provided
+                    if (manhours > 0 && tonnage > 0) {
+                        activityDetail = `Estimation added: ${manhours} manhours, ${tonnage} tons`;
+                    } else if (manhours > 0) {
+                        activityDetail = `Estimation added: ${manhours} manhours`;
+                    } else {
+                        activityDetail = `Estimation added: ${tonnage} tons`;
+                    }
                     
                     try {
                         const cooSnapshot = await db.collection('users').where('role', '==', 'coo').limit(1).get();
