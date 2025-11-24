@@ -1,6 +1,7 @@
-// api/time-requests.js - Additional time request management
+// api/time-requests.js - Time request management with email notifications
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
+const { sendEmailNotification } = require('./email'); // Import email function
 const util = require('util');
 
 const db = admin.firestore();
@@ -53,7 +54,6 @@ const handler = async (req, res) => {
                 if (!doc.exists) {
                     return res.status(404).json({ success: false, error: 'Time request not found' });
                 }
-                // --- FIX: Add project details to single request ---
                 const requestData = doc.data();
                 const projectDoc = await db.collection('projects').doc(requestData.projectId).get();
                 const projectData = projectDoc.exists ? projectDoc.data() : {};
@@ -69,7 +69,7 @@ const handler = async (req, res) => {
                         designLeadName: projectData.designLeadName || requestData.designLeadName,
                         currentAllocatedHours: projectData.allocatedHours || requestData.currentAllocatedHours || 0,
                         currentHoursLogged: projectData.hoursLogged || requestData.currentHoursLogged || 0,
-                        additionalHours: projectData.additionalHours || 0 // <-- ADD THIS
+                        additionalHours: projectData.additionalHours || 0
                     } 
                 });
             }
@@ -101,7 +101,7 @@ const handler = async (req, res) => {
             const snapshot = await query.limit(50).get();
             const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             
-            // --- NEW: Enhance with project data ---
+            // Enhance with project data
             const populatedRequests = await Promise.all(requests.map(async (request) => {
                 const projectDoc = await db.collection('projects').doc(request.projectId).get();
                 const project = projectDoc.exists ? projectDoc.data() : {};
@@ -114,28 +114,27 @@ const handler = async (req, res) => {
                     designLeadName: project.designLeadName || request.designLeadName,
                     currentAllocatedHours: project.allocatedHours || request.currentAllocatedHours || 0,
                     currentHoursLogged: project.hoursLogged || request.currentHoursLogged || 0,
-                    additionalHours: project.additionalHours || 0 // <-- ADD THIS
+                    additionalHours: project.additionalHours || 0
                 };
             }));
             
             return res.status(200).json({ 
                 success: true, 
-                data: populatedRequests, // <-- USE POPULATED
-                count: populatedRequests.length // <-- USE POPULATED
+                data: populatedRequests,
+                count: populatedRequests.length
             });
         }
 
         // ============================================
-        // POST - Create time request
+        // POST - Create time request with email notification
         // ============================================
         if (req.method === 'POST') {
             const { 
                 projectId, 
-                // timesheetId, // Old
                 requestedHours, 
                 reason, 
                 attachmentUrl,
-                pendingTimesheetData // <-- ADD THIS
+                pendingTimesheetData
             } = req.body;
             
             // Validation
@@ -169,13 +168,12 @@ const handler = async (req, res) => {
                 }
             }
             
-            // --- FIX: Get current hours from project doc ---
             const currentHoursLogged = project.hoursLogged || 0;
             const currentAllocatedHours = project.allocatedHours || 0;
-            const currentAdditionalHours = project.additionalHours || 0; // <-- ADD THIS
+            const currentAdditionalHours = project.additionalHours || 0;
             
-            // Create time request
-            const requestData = {
+            // Create time request document
+            const timeRequest = {
                 projectId,
                 projectName: project.projectName,
                 projectCode: project.projectCode,
@@ -183,80 +181,107 @@ const handler = async (req, res) => {
                 designerUid: req.user.uid,
                 designerName: req.user.name,
                 designerEmail: req.user.email,
-                designLeadUid: project.designLeadUid,
-                designLeadName: project.designLeadName,
-                timesheetId: pendingTimesheetData ? 'pending' : null, // <-- USE THIS
-                pendingTimesheetData: pendingTimesheetData || null, // <-- ADD THIS
-                requestedHours: parseFloat(requestedHours),
-                reason: reason.trim(),
+                designLeadUid: project.designLeadUid || null,
+                designLeadName: project.designLeadName || null,
+                requestedHours: Number(requestedHours),
+                reason,
                 attachmentUrl: attachmentUrl || null,
-                currentAllocatedHours: currentAllocatedHours, // <-- USE VARIABLE
-                currentAdditionalHours: currentAdditionalHours, // <-- ADD THIS
-                currentHoursLogged: currentHoursLogged,
+                currentHoursLogged,
+                currentAllocatedHours,
+                pendingTimesheetData: pendingTimesheetData || null,
                 status: 'pending',
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             };
             
-            const requestRef = await db.collection('timeRequests').add(requestData);
+            const docRef = await db.collection('timeRequests').add(timeRequest);
             
             // Log activity
             await db.collection('activities').add({
                 type: 'time_request_created',
-                details: `${req.user.name} requested ${requestedHours} additional hours for ${project.projectName}`,
+                details: `Requested ${requestedHours}h additional time for ${project.projectName}`,
                 performedByName: req.user.name,
                 performedByRole: req.user.role,
                 performedByUid: req.user.uid,
                 timestamp: admin.firestore.FieldValue.serverTimestamp(),
-                projectId: projectId,
-                requestId: requestRef.id
+                projectId,
+                requestId: docRef.id
             });
             
-            // Notify COO and Design Lead
-            const notifications = [
-                {
-                    type: 'time_request_pending',
-                    recipientRole: 'coo',
-                    message: `${req.user.name} requested ${requestedHours}h additional time for "${project.projectName}"`,
-                    projectId: projectId,
-                    projectName: project.projectName,
-                    requestId: requestRef.id,
-                    requestedHours: requestedHours,
-                    priority: 'high'
-                }
-            ];
-            
+            // Create notifications
+            const notificationRoles = ['coo', 'director'];
             if (project.designLeadUid) {
-                notifications.push({
-                    type: 'time_request_pending',
-                    recipientUid: project.designLeadUid,
-                    recipientRole: 'design_lead',
-                    message: `${req.user.name} requested ${requestedHours}h additional time for "${project.projectName}"`,
-                    projectId: projectId,
-                    projectName: project.projectName,
-                    requestId: requestRef.id,
-                    requestedHours: requestedHours,
-                    priority: 'normal'
-                });
+                notificationRoles.push('design_lead');
             }
             
-            for (const notification of notifications) {
-                await db.collection('notifications').add({
-                    ...notification,
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                    isRead: false
-                });
+            const notificationPromises = [];
+            for (const role of notificationRoles) {
+                if (role === 'design_lead' && project.designLeadUid) {
+                    notificationPromises.push(
+                        db.collection('notifications').add({
+                            type: 'time_request_created',
+                            recipientUid: project.designLeadUid,
+                            recipientRole: 'design_lead',
+                            message: `${req.user.name} has requested ${requestedHours}h additional time for "${project.projectName}"`,
+                            projectId,
+                            projectName: project.projectName,
+                            requestId: docRef.id,
+                            priority: 'high',
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false
+                        })
+                    );
+                } else {
+                    const roleUsersSnapshot = await db.collection('users').where('role', '==', role).get();
+                    roleUsersSnapshot.forEach(userDoc => {
+                        notificationPromises.push(
+                            db.collection('notifications').add({
+                                type: 'time_request_created',
+                                recipientUid: userDoc.id,
+                                recipientRole: role,
+                                message: `${req.user.name} has requested ${requestedHours}h additional time for "${project.projectName}"`,
+                                projectId,
+                                projectName: project.projectName,
+                                requestId: docRef.id,
+                                priority: 'high',
+                                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                                isRead: false
+                            })
+                        );
+                    });
+                }
             }
+            
+            await Promise.all(notificationPromises);
+            
+            // SEND EMAIL NOTIFICATION for time request creation
+            const emailData = {
+                projectName: project.projectName,
+                projectCode: project.projectCode,
+                projectId: projectId,
+                clientCompany: project.clientCompany,
+                designerName: req.user.name,
+                designerEmail: req.user.email,
+                requestedHours: requestedHours,
+                currentHoursLogged: currentHoursLogged,
+                currentAllocatedHours: currentAllocatedHours + currentAdditionalHours,
+                reason: reason,
+                designManagerEmail: project.designManagerEmail || null
+            };
+            
+            // Send email notification
+            await sendEmailNotification('time_request.created', emailData);
             
             return res.status(201).json({ 
                 success: true, 
-                message: 'Time request submitted successfully',
-                requestId: requestRef.id
+                message: 'Time request created successfully',
+                id: docRef.id,
+                data: timeRequest
             });
         }
 
         // ============================================
-        // PUT - Review/Update time request
+        // PUT - Update time request with email notifications
         // ============================================
         if (req.method === 'PUT') {
             const { id } = req.query;
@@ -266,19 +291,13 @@ const handler = async (req, res) => {
                 return res.status(400).json({ success: false, error: 'Request ID is required' });
             }
             
-            // Only COO/Director can approve/reject
-            if (!['coo', 'director'].includes(req.user.role)) {
-                return res.status(403).json({ 
-                    success: false, 
-                    error: 'Only COO/Director can review time requests' 
-                });
+            if (!action || !['approve', 'reject', 'request_info'].includes(action)) {
+                return res.status(400).json({ success: false, error: 'Invalid action' });
             }
             
-            if (!action || !['approve', 'reject', 'request_info'].includes(action)) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'Valid action is required (approve, reject, request_info)' 
-                });
+            // Check permissions
+            if (!['coo', 'director'].includes(req.user.role)) {
+                return res.status(403).json({ success: false, error: 'Permission denied' });
             }
             
             const requestRef = db.collection('timeRequests').doc(id);
@@ -290,31 +309,27 @@ const handler = async (req, res) => {
             
             const request = requestDoc.data();
             
-            if (request.status !== 'pending' && request.status !== 'info_requested') {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'This request has already been processed' 
-                });
-            }
-            
+            // Prepare updates
             const updates = {
                 reviewedBy: req.user.name,
                 reviewedByUid: req.user.uid,
-                reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
                 reviewComment: comment || null,
+                reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             };
             
             let activityDetails = '';
             let notificationMessage = '';
+            let emailEvent = '';
+            let emailData = {};
             
-            // Handle different actions
             if (action === 'approve') {
-                const hoursToApprove = parseFloat(approvedHours);
-                if (!hoursToApprove || hoursToApprove <= 0) {
+                const hoursToApprove = approvedHours || request.requestedHours;
+                
+                if (hoursToApprove <= 0) {
                     return res.status(400).json({ 
                         success: false, 
-                        error: 'Approved hours is required for approval' 
+                        error: 'Approved hours must be greater than 0' 
                     });
                 }
                 
@@ -323,15 +338,12 @@ const handler = async (req, res) => {
                 
                 // Update project allocation
                 await db.collection('projects').doc(request.projectId).update({
-                    // --- FIX: Use additionalHours field ---
                     additionalHours: admin.firestore.FieldValue.increment(hoursToApprove),
                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
                 });
                 
-                // If applying to specific timesheet, update it
-                // --- FIX: Check for pending timesheet data ---
-                if (applyToTimesheet && request.timesheetId === 'pending' && request.pendingTimesheetData) {
-                    // Create the new timesheet entry
+                // If applying to pending timesheet
+                if (applyToTimesheet && request.pendingTimesheetData) {
                     const timesheetData = {
                         ...request.pendingTimesheetData,
                         projectId: request.projectId,
@@ -341,7 +353,7 @@ const handler = async (req, res) => {
                         designerEmail: request.designerEmail,
                         date: admin.firestore.Timestamp.fromDate(new Date(request.pendingTimesheetData.date)),
                         hours: parseFloat(request.pendingTimesheetData.hours),
-                        status: 'approved', // Auto-approve
+                        status: 'approved',
                         additionalTimeApproved: true,
                         additionalTimeRequestId: id,
                         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -355,12 +367,25 @@ const handler = async (req, res) => {
                         hoursLogged: admin.firestore.FieldValue.increment(timesheetData.hours)
                     });
                     
-                    // Link the timesheet to the request
                     updates.timesheetId = timesheetRef.id;
                 }
                 
                 activityDetails = `Approved ${hoursToApprove}h additional time for ${request.projectName}`;
                 notificationMessage = `Your request for ${request.requestedHours}h has been approved (${hoursToApprove}h granted)`;
+                emailEvent = 'time_request.approved';
+                
+                // Prepare email data for approval
+                emailData = {
+                    projectName: request.projectName,
+                    projectCode: request.projectCode,
+                    projectId: request.projectId,
+                    requestedHours: request.requestedHours,
+                    approvedHours: hoursToApprove,
+                    approvedBy: req.user.name,
+                    comments: comment || '',
+                    designerEmail: request.designerEmail,
+                    designerName: request.designerName
+                };
                 
             } else if (action === 'reject') {
                 if (!comment) {
@@ -373,6 +398,19 @@ const handler = async (req, res) => {
                 updates.status = 'rejected';
                 activityDetails = `Rejected time request for ${request.projectName}`;
                 notificationMessage = `Your request for ${request.requestedHours}h has been rejected. Reason: ${comment}`;
+                emailEvent = 'time_request.rejected';
+                
+                // Prepare email data for rejection
+                emailData = {
+                    projectName: request.projectName,
+                    projectCode: request.projectCode,
+                    projectId: request.projectId,
+                    requestedHours: request.requestedHours,
+                    rejectedBy: req.user.name,
+                    rejectReason: comment,
+                    designerEmail: request.designerEmail,
+                    designerName: request.designerName
+                };
                 
             } else if (action === 'request_info') {
                 updates.status = 'info_requested';
@@ -424,6 +462,11 @@ const handler = async (req, res) => {
                 });
             }
             
+            // SEND EMAIL NOTIFICATION for approval/rejection
+            if (emailEvent && (action === 'approve' || action === 'reject')) {
+                await sendEmailNotification(emailEvent, emailData);
+            }
+            
             return res.status(200).json({ 
                 success: true, 
                 message: `Time request ${action}ed successfully` 
@@ -465,7 +508,7 @@ const handler = async (req, res) => {
             }
             
             // Can only delete pending or rejected requests
-            if (!['pending', 'rejected', 'info_requested'].includes(request.status)) { // <-- ADD 'info_requested'
+            if (!['pending', 'rejected', 'info_requested'].includes(request.status)) {
                 return res.status(400).json({ 
                     success: false, 
                     error: 'Cannot delete approved or processed requests' 
@@ -493,4 +536,3 @@ const handler = async (req, res) => {
 };
 
 module.exports = allowCors(handler);
-
