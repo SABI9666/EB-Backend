@@ -169,16 +169,40 @@ const handler = async (req, res) => {
         // POST - Create proposal
         // ============================================
         if (req.method === 'POST') {
-            const { projectName, clientCompany, projectDescription, projectLinks, services } = req.body;
+            const { 
+                projectName, 
+                clientCompany, 
+                projectDescription,
+                scopeOfWork,
+                projectType,
+                country,
+                timeline,
+                priority,
+                projectComments,
+                projectLinks, 
+                services 
+            } = req.body;
 
-            if (!projectName || !clientCompany || !projectDescription) {
-                return res.status(400).json({ success: false, error: 'Missing required fields' });
+            // Accept either projectDescription or scopeOfWork
+            const description = projectDescription || scopeOfWork;
+
+            if (!projectName || !clientCompany || !description) {
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'Missing required fields: projectName, clientCompany, and description are required' 
+                });
             }
 
             const proposalData = {
                 projectName,
                 clientCompany,
-                projectDescription,
+                projectDescription: description,
+                scopeOfWork: description, // Store in both fields for compatibility
+                projectType: projectType || [],
+                country: country || '',
+                timeline: timeline || '',
+                priority: priority || 'medium',
+                projectComments: projectComments || '',
                 projectLinks: projectLinks || [],
                 services: services || [],
                 status: 'draft',
@@ -504,10 +528,20 @@ const handler = async (req, res) => {
                     if (proposal.allocationStatus === 'allocated') {
                         return res.status(400).json({ success: false, error: 'Cannot edit an allocated proposal' });
                     }
+                    
+                    // Accept both projectDescription and scopeOfWork
+                    const description = data.projectDescription || data.scopeOfWork;
+                    
                     updates = {
                         projectName: data.projectName || proposal.projectName,
                         clientCompany: data.clientCompany || proposal.clientCompany,
-                        projectDescription: data.projectDescription || proposal.projectDescription,
+                        projectDescription: description || proposal.projectDescription || proposal.scopeOfWork,
+                        scopeOfWork: description || proposal.scopeOfWork || proposal.projectDescription,
+                        projectType: data.projectType || proposal.projectType || [],
+                        country: data.country || proposal.country || '',
+                        timeline: data.timeline || proposal.timeline || '',
+                        priority: data.priority || proposal.priority || 'medium',
+                        projectComments: data.projectComments || proposal.projectComments || '',
                         projectLinks: data.projectLinks || proposal.projectLinks || [],
                         services: data.services || proposal.services || []
                     };
