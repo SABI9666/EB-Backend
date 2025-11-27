@@ -296,11 +296,20 @@ const handler = async (req, res) => {
                         pmHours: parseFloat(data.pmHours) || 0
                     };
                     
+                    // ✅ CRITICAL FIX: Track if tonnage was used for design hours calculation
+                    const usedTonnageForDesign = data.usedTonnageForDesign || false;
+                    const tonnageValue = usedTonnageForDesign ? tonnage : null;
+                    
                     updates = {
                         estimation: {
                             manhours: manhours,
                             totalHours: manhours, // Also store as totalHours for compatibility
                             tonnage: tonnage,
+                            
+                            // ✅ NEW CRITICAL FIELDS FOR ALLOCATION LOGIC
+                            usedTonnageForDesign: usedTonnageForDesign,  // Boolean flag
+                            tonnageValue: tonnageValue,                   // Actual tonnage if used
+                            
                             services: data.services || [],
                             estimatedBy: req.user.email,
                             estimatorName: req.user.name,
