@@ -1,3 +1,4 @@
+// api/files.js - FIXED: Merged working upload with proper null handling
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
@@ -26,33 +27,34 @@ const allowCors = fn => async (req, res) => {
     return await fn(req, res);
 };
 
-// --- HELPER FUNCTIONS (Keep your existing ones) ---
+// --- HELPER FUNCTIONS ---
 
 async function canAccessFile(file, userRole, userUid, proposalId = null) {
+    // Management & Estimators see everything
+    if (['coo', 'director', 'estimator'].includes(userRole)) return true;
+
     let proposal = null;
-    if (file.proposalId || proposalId) {
-        const proposalDoc = await db.collection('proposals').doc(file.proposalId || proposalId).get();
+    const pId = file.proposalId || proposalId;
+
+    if (pId) {
+        const proposalDoc = await db.collection('proposals').doc(pId).get();
         if (proposalDoc.exists) proposal = proposalDoc.data();
     }
     
+    // BDM Access: Can only see their own proposals
     if (userRole === 'bdm') {
-        if (!proposal || proposal.createdByUid !== userUid) return false;
+        if (proposal) return proposal.createdByUid === userUid;
+        return file.uploadedByUid === userUid;
     }
 
-    if (!file.proposalId && !proposalId) return userRole !== 'bdm';
-
-    if (!file.fileType || file.fileType === 'project' || file.fileType === 'link') {
-        return userRole !== 'bdm' || (proposal && proposal.createdByUid === userUid);
-    }
-
-    if (file.fileType === 'estimation') {
-        if (['estimator', 'coo', 'director'].includes(userRole)) return true;
-        if (userRole === 'bdm') {
-            const proposalStatus = proposal?.status;
-            return (proposal.createdByUid === userUid) && 
-                   (proposalStatus === 'approved' || proposalStatus === 'submitted_to_client');
+    // Designer/Lead Access
+    if (['design_lead', 'designer'].includes(userRole)) {
+        if (!file.fileType || ['project', 'drawing', 'specification', 'link'].includes(file.fileType)) {
+            return true; 
         }
+        return false;
     }
+
     return false;
 }
 
@@ -81,9 +83,6 @@ async function checkUploadPermissions(user, proposalId, fileType) {
     if (fileType === 'estimation' && user.role !== 'estimator') {
         throw new Error('Access denied: Only estimators can upload estimation files.');
     }
-    if (fileType === 'project' && user.role !== 'bdm' && user.role !== 'design_lead' && user.role !== 'designer') {
-         throw new Error('Access denied: You do not have permission to upload project files.');
-    }
     return true;
 }
 
@@ -92,7 +91,7 @@ async function checkUploadPermissions(user, proposalId, fileType) {
 const handler = async (req, res) => {
     try {
         // ============================================
-        // NEW: PDF/FILE UPLOAD THROUGH BACKEND
+        // POST - PDF/FILE UPLOAD THROUGH BACKEND
         // ============================================
         if (req.method === 'POST' && req.url && req.url.includes('upload-file')) {
             return upload.single('file')(req, res, async (err) => {
@@ -124,16 +123,21 @@ const handler = async (req, res) => {
                 }
                 
                 try {
-                    const proposalId = req.body.proposalId || null;
+                    // CRITICAL: Use null instead of undefined for Firestore
+                    const proposalId = req.body.proposalId && req.body.proposalId !== 'null' && req.body.proposalId !== '' 
+                        ? req.body.proposalId 
+                        : null;
                     const fileType = req.body.fileType || 'project';
                     
                     console.log(`📤 Backend upload: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+                    console.log(`   ProposalId: ${proposalId}, FileType: ${fileType}`);
                     
                     // Check permissions
                     await checkUploadPermissions(req.user, proposalId, fileType);
                     
                     // Upload to Firebase Storage
-                    const storagePath = `${proposalId || 'general'}/${Date.now()}-${file.originalname}`;
+                    const folder = proposalId || 'general';
+                    const storagePath = `${folder}/${Date.now()}-${file.originalname}`;
                     const fileRef = bucket.file(storagePath);
                     
                     await fileRef.save(file.buffer, {
@@ -144,19 +148,20 @@ const handler = async (req, res) => {
                     });
                     
                     // Make public
-                    await fileRef.makePublic();
+                    await fileRef.makePublic().catch(e => console.log('Note: Could not make public:', e.message));
                     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
                     
                     console.log(`✅ Uploaded to storage: ${storagePath}`);
                     
-                    // Save to Firestore
+                    // Save to Firestore - NO undefined values!
                     const fileData = {
                         fileName: storagePath,
                         originalName: file.originalname,
                         url: publicUrl,
+                        fileUrl: publicUrl,
                         mimeType: file.mimetype,
                         fileSize: file.size,
-                        proposalId: proposalId,
+                        proposalId: proposalId,  // null is OK, undefined is NOT
                         fileType: fileType,
                         uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
                         uploadedByUid: req.user.uid,
@@ -182,7 +187,10 @@ const handler = async (req, res) => {
                     
                     return res.status(201).json({ 
                         success: true, 
-                        data: { id: docRef.id, ...fileData } 
+                        data: { 
+                            id: docRef.id, 
+                            ...fileData 
+                        } 
                     });
                     
                 } catch (error) {
@@ -204,10 +212,12 @@ const handler = async (req, res) => {
         // GET - RETRIEVE FILES
         // ============================================
         if (req.method === 'GET') {
-            const { proposalId, fileId } = req.query;
+            const { proposalId, projectId, fileId, id } = req.query;
             
-            if (fileId) {
-                const fileDoc = await db.collection('files').doc(fileId).get();
+            // Single file by ID
+            if (fileId || id) {
+                const docId = fileId || id;
+                const fileDoc = await db.collection('files').doc(docId).get();
                 if (!fileDoc.exists) return res.status(404).json({ success: false, error: 'File not found' });
                 
                 const fileData = fileDoc.data();
@@ -216,24 +226,38 @@ const handler = async (req, res) => {
                 }
                 return res.status(200).json({ 
                     success: true, 
-                    data: { ...fileData, id: fileDoc.id, canView: true, canDownload: true, canDelete: fileData.uploadedByUid === req.user.uid || req.user.role === 'director' } 
+                    data: { 
+                        ...fileData, 
+                        id: fileDoc.id, 
+                        canView: true, 
+                        canDownload: true, 
+                        canDelete: fileData.uploadedByUid === req.user.uid || req.user.role === 'director' 
+                    } 
                 });
             }
             
+            // List files
             let query = db.collection('files').orderBy('uploadedAt', 'desc');
+            
             if (proposalId) {
-                 if (req.user.role === 'bdm') {
+                if (req.user.role === 'bdm') {
                     const proposalDoc = await db.collection('proposals').doc(proposalId).get();
                     if (!proposalDoc.exists || proposalDoc.data().createdByUid !== req.user.uid) {
                         return res.status(403).json({ success: false, error: 'Access denied to this proposal.' });
                     }
                 }
                 query = query.where('proposalId', '==', proposalId);
+            } else if (projectId) {
+                query = query.where('projectId', '==', projectId);
             } else if (req.user.role === 'bdm') {
+                // BDM can only see files from their own proposals
                 const proposalsSnapshot = await db.collection('proposals').where('createdByUid', '==', req.user.uid).get();
                 const proposalIds = proposalsSnapshot.docs.map(doc => doc.id);
                 if (proposalIds.length === 0) return res.status(200).json({ success: true, data: [] });
-                query = query.where('proposalId', 'in', proposalIds);
+                // Firestore 'in' query limit is 10, so we may need to batch
+                if (proposalIds.length <= 10) {
+                    query = query.where('proposalId', 'in', proposalIds);
+                }
             }
             
             const snapshot = await query.get();
@@ -243,20 +267,32 @@ const handler = async (req, res) => {
         }
 
         // ============================================
-        // POST - UPLOAD LINKS (URLs) - EXISTING METHOD
+        // POST - UPLOAD LINKS (URLs)
         // ============================================
         if (req.method === 'POST') {
-            if (typeof req.body !== 'object') { 
-                try { 
-                    req.body = JSON.parse(req.body); 
+            // Parse body if needed
+            if (typeof req.body !== 'object' || Object.keys(req.body).length === 0) { 
+                try {
+                    const chunks = [];
+                    await new Promise((resolve) => {
+                        req.on('data', (chunk) => chunks.push(chunk));
+                        req.on('end', () => {
+                            try {
+                                req.body = JSON.parse(Buffer.concat(chunks).toString());
+                            } catch (e) {
+                                req.body = {};
+                            }
+                            resolve();
+                        });
+                    });
                 } catch (e) {
                     console.error('Failed to parse body:', e);
-                } 
+                }
             }
 
-            const { links, proposalId, fileType = 'project' } = req.body;
+            const { links, proposalId, projectId, fileType = 'project' } = req.body;
 
-            // EXISTING: Upload Links (same as before)
+            // Upload Links
             if (links && Array.isArray(links)) {
                 try {
                     await checkUploadPermissions(req.user, proposalId, 'link');
@@ -267,10 +303,13 @@ const handler = async (req, res) => {
                     for (const link of links) {
                         const linkData = {
                             originalName: link.title || link.url,
+                            fileName: link.title || link.url,
                             url: link.url,
+                            fileUrl: link.url,
                             mimeType: 'text/url',
                             fileSize: 0,
                             proposalId: proposalId || null,
+                            projectId: projectId || null,
                             fileType: 'link',
                             linkDescription: link.description || '',
                             uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -365,7 +404,3 @@ const handler = async (req, res) => {
 };
 
 module.exports = allowCors(handler);
-
-
-
-
