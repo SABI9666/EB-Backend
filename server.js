@@ -1,4 +1,4 @@
-// server.js - Complete backend entry point with EMAIL + TIMESHEET + VARIATIONS + TIME-REQUESTS API
+// server.js - Complete backend entry point with EMAIL + TIMESHEET + VARIATIONS + TIME-REQUESTS + ALLOCATION-REQUESTS API
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -33,8 +33,8 @@ app.use(cors({
             'http://localhost:3000',
             'http://localhost:5500',
             'http://127.0.0.1:5500',
-            'https://eb-traker.vercel.app',
-            'https://eb-traker.vercel.app-*.vercel.app', // Vercel preview deployments
+            'https://eb-tracker-frontend.vercel.app',
+            'https://eb-tracker-frontend-*.vercel.app', // Vercel preview deployments
         ];
         
         // Check if origin matches allowed patterns
@@ -101,12 +101,14 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         message: 'EBTracker Backend API',
-        version: '1.1.0',
+        version: '1.2.0',
         status: 'running',
         endpoints: [
             'GET  /health - Health check',
             'GET  /api/dashboard - Dashboard data',
-            // ... (rest of your endpoints) ...
+            'POST /api/allocation-requests - COO request allocation/budget change',
+            'GET  /api/allocation-requests - Get pending requests',
+            'PUT  /api/allocation-requests - Director approve/reject',
         ]
     });
 });
@@ -169,10 +171,16 @@ try {
     console.log('  Loading timesheets...');
     const { timesheetsRouter, timeRequestRouter } = require('./api/timesheets');
 
+    // ============================================
+    // NEW: Load allocation-requests handler
+    // ============================================
+    console.log('  Loading allocation-requests...');
+    const allocationRequestsHandler = require('./api/allocation-requests');
+
     console.log('✅ All handlers loaded successfully');
 
     // Register routes
-    console.log('📝 Registering routes...');
+    console.log('🔗 Registering routes...');
     app.use('/api/dashboard', dashboardHandler);
     app.use('/api/proposals', proposalsHandler);
     app.use('/api/projects', projectsHandler);
@@ -193,6 +201,11 @@ try {
     app.use('/api/timesheets', timesheetsRouter);
     app.use('/api/time-requests', timeRequestRouter);
     // --- End of Revert ---
+
+    // ============================================
+    // NEW: Register allocation-requests route
+    // ============================================
+    app.use('/api/allocation-requests', allocationRequestsHandler);
 
     console.log('✅ All routes registered');
 
@@ -232,7 +245,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('');
     console.log('╔═══════════════════════════════════════╗');
     console.log(`║  ✅ Server running on port ${PORT}      ║`);
-    console.log(`║  🌍 Environment: ${(process.env.NODE_ENV || 'development').padEnd(20)}║`);
+    console.log(`║  🌐 Environment: ${(process.env.NODE_ENV || 'development').padEnd(20)}║`);
     const admin = require('./api/_firebase-admin');
     console.log(`║  🔥 Firebase: ${(admin.apps.length > 0 ? 'Initialized' : 'Not initialized').padEnd(23)}║`);
     console.log('║  🌐 CORS: Enabled for Vercel           ║');
@@ -241,7 +254,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('📡 API Endpoints ready:');
     console.log('   GET  /health');
     console.log('   GET  /api/dashboard');
-    // ... (rest of your logs) ...
+    console.log('   *    /api/proposals');
+    console.log('   *    /api/projects');
+    console.log('   *    /api/allocation-requests  ← NEW');
+    console.log('   *    /api/timesheets');
+    console.log('   *    /api/time-requests');
     console.log('');
 });
 
@@ -265,5 +282,4 @@ process.on('SIGINT', () => {
 });
 
 module.exports = app;
-
 
