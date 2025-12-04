@@ -722,6 +722,11 @@ const handler = async (req, res) => {
                     designStatus: 'in_progress',
                 };
                 
+                // ✅ Save Project Number if provided by COO
+                if (data.projectNumber) {
+                    updates.projectNumber = data.projectNumber;
+                }
+                
                 // ✅ FIX: Only add optional fields if they have valid values (not undefined)
                 if (targetCompletionDate) {
                     updates.targetCompletionDate = targetCompletionDate;
