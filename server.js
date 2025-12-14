@@ -176,6 +176,9 @@ try {
     // ============================================
     console.log('  Loading allocation-requests...');
     const allocationRequestsHandler = require('./api/allocation-requests');
+    
+    console.log('  Loading leave-requests...');
+    const leaveRequestsHandler = require('./api/leave-requests');
 
     console.log('✅ All handlers loaded successfully');
 
@@ -206,6 +209,7 @@ try {
     // NEW: Register allocation-requests route
     // ============================================
     app.use('/api/allocation-requests', allocationRequestsHandler);
+    app.use('/api/leave-requests', leaveRequestsHandler);
 
     console.log('✅ All routes registered');
 
@@ -257,6 +261,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('   *    /api/proposals');
     console.log('   *    /api/projects');
     console.log('   *    /api/allocation-requests  ← NEW');
+    console.log('   *    /api/leave-requests  ← NEW');
     console.log('   *    /api/timesheets');
     console.log('   *    /api/time-requests');
     console.log('');
