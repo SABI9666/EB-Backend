@@ -1,42 +1,25 @@
-// timesheets (7).js - CORRECTED
 const express = require('express');
-const admin = require('./_firebase-admin'); // <<< THIS IS THE FIX (removed curly braces)
-const db = admin.firestore(); // This will now work
+const admin = require('./_firebase-admin');
+const db = admin.firestore();
 const { FieldValue } = require('firebase-admin/firestore');
-
-// --- FIX: Import verifyToken and util ---
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
-// --- End of Fix ---
 
 const timesheetsRouter = express.Router();
 const timeRequestRouter = express.Router();
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-
-/**
- * Aggregates total logged hours for a project.
- * This is a helper to avoid recalculating totals manually.
- * @param {string} projectId The ID of the project to aggregate.
- * @returns {Promise<number>} Total hours logged.
- */
 const getAggregatedProjectHours = async (projectId) => {
     try {
         const timesheetsSnapshot = await db.collection('timesheets')
             .where('projectId', '==', projectId)
             .get();
         
-        if (timesheetsSnapshot.empty) {
-            return 0;
-        }
+        if (timesheetsSnapshot.empty) return 0;
 
         let totalHours = 0;
         timesheetsSnapshot.forEach(doc => {
             totalHours += doc.data().hours || 0;
         });
-
         return totalHours;
     } catch (error) {
         console.error(`Error aggregating hours for project ${projectId}:`, error);
@@ -44,10 +27,6 @@ const getAggregatedProjectHours = async (projectId) => {
     }
 };
 
-/**
- * Updates the 'hoursLogged' field on a project document.
- * @param {string} projectId The ID of the project to update.
- */
 const updateProjectHoursLogged = async (projectId) => {
     try {
         const totalHours = await getAggregatedProjectHours(projectId);
@@ -55,42 +34,70 @@ const updateProjectHoursLogged = async (projectId) => {
             hoursLogged: totalHours
         });
         console.log(`Updated project ${projectId} to ${totalHours} logged hours.`);
-    } catch (error)
-    {
+    } catch (error) {
         console.error(`Error updating project ${projectId} hours:`, error);
     }
 };
 
+const getWeekStart = (date) => {
+    const d = new Date(date);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    return new Date(d.setDate(diff));
+};
 
-// ============================================
-// TIMESHEETS ROUTER (/api/timesheets)
-// ============================================
+const getMonthStart = (date) => {
+    const d = new Date(date);
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+};
 
-/**
- * GET /api/timesheets
- * Handles:
- * 1. ?action=executive_dashboard (for COO/Director)
- * 2. ?projectId=... (for getting a project's timesheets)
- * 3. No query (for a designer getting their own timesheets)
- */
+const formatWeekLabel = (weekStart) => {
+    const start = new Date(weekStart);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${months[start.getMonth()]} ${start.getDate()}-${end.getDate()}`;
+};
+
+const formatMonthLabel = (monthStart) => {
+    const d = new Date(monthStart);
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+    return `${months[d.getMonth()]} ${d.getFullYear()}`;
+};
+
+const parseDate = (dateValue) => {
+    if (!dateValue) return null;
+    
+    if (dateValue.seconds !== undefined) {
+        return new Date(dateValue.seconds * 1000);
+    } else if (dateValue._seconds !== undefined) {
+        return new Date(dateValue._seconds * 1000);
+    } else if (typeof dateValue === 'string') {
+        return new Date(dateValue);
+    } else if (dateValue instanceof Date) {
+        return dateValue;
+    } else if (typeof dateValue === 'number') {
+        return new Date(dateValue);
+    }
+    return null;
+};
+
 timesheetsRouter.get('/', async (req, res) => {
     
-    // --- FIX: Add internal auth check ---
     try {
         await util.promisify(verifyToken)(req, res);
     } catch (error) {
         console.error("Auth error in GET /api/timesheets:", error);
         return res.status(401).json({ success: false, error: 'Authentication failed', message: error.message });
     }
-    // --- End of Fix ---
 
     const { action, projectId } = req.query;
-    const designerUid = req.user.uid; // From auth middleware
+    const designerUid = req.user.uid;
+    const userRole = req.user.role;
 
-    // 1. ================== EXECUTIVE DASHBOARD ==================
     if (action === 'executive_dashboard') {
         try {
-            // --- 1. Fetch all raw data ---
             const projectsSnapshot = await db.collection('projects').get();
             const timesheetsSnapshot = await db.collection('timesheets').get();
             const designersSnapshot = await db.collection('users').where('role', '==', 'designer').get();
@@ -103,35 +110,27 @@ timesheetsRouter.get('/', async (req, res) => {
                 allDesigners[doc.id] = { id: doc.id, ...doc.data(), totalHours: 0, projectsWorkedOn: new Set() };
             });
 
-            // --- 2. Process Timesheets into Projects ---
-            let projectHours = {}; // { projectId: { logged: number, allocated: number, ... } }
-
+            let projectHours = {};
             projectsSnapshot.forEach(doc => {
                 const data = doc.data();
                 projectHours[doc.id] = {
                     id: doc.id,
                     ...data,
-                    // ===============================================================
-                    //  THE FIX: Read 'maxAllocatedHours' from the project document
-                    // ===============================================================
-                    allocatedHours: data.maxAllocatedHours || 0, 
-                    hoursLogged: 0, // Will be calculated next
+                    allocatedHours: data.maxAllocatedHours || 0,
+                    hoursLogged: 0,
                 };
             });
 
-            // Aggregate logged hours from timesheets
             allTimesheets.forEach(ts => {
                 if (projectHours[ts.projectId]) {
                     projectHours[ts.projectId].hoursLogged += ts.hours || 0;
                 }
-                // Also aggregate designer stats
                 if (allDesigners[ts.designerUid]) {
                     allDesigners[ts.designerUid].totalHours += ts.hours || 0;
                     allDesigners[ts.designerUid].projectsWorkedOn.add(ts.projectId);
                 }
             });
 
-            // --- 3. Calculate Metrics and Format Data ---
             const projects = Object.values(projectHours);
             const designers = Object.values(allDesigners).map(d => ({
                 ...d,
@@ -155,11 +154,9 @@ timesheetsRouter.get('/', async (req, res) => {
             };
 
             projects.forEach(p => {
-                // Tally status for pie chart
                 const statusKey = p.status || 'unknown';
                 analytics.projectStatusDistribution[statusKey] = (analytics.projectStatusDistribution[statusKey] || 0) + 1;
                 
-                // Calculate timeline metrics
                 if (p.allocatedHours > 0) {
                     metrics.projectsWithTimeline += 1;
                     metrics.totalAllocatedHours += p.allocatedHours;
@@ -179,7 +176,6 @@ timesheetsRouter.get('/', async (req, res) => {
                         analytics.withinTimelineProjects.push(p);
                     }
                 } else {
-                    // Project has no timeline
                     p.isExceeded = false;
                     p.exceededBy = 0;
                     p.percentageUsed = 0;
@@ -188,20 +184,11 @@ timesheetsRouter.get('/', async (req, res) => {
 
             metrics.averageHoursPerProject = projects.length > 0 ? (metrics.totalLoggedHours / projects.length) : 0;
 
-            // --- 4. Send Response ---
             return res.status(200).json({
                 success: true,
-                data: {
-                    metrics,
-                    projects,
-                    designers: designers.map(d => ({ // Send only what's needed
-                        name: d.name,
-                        email: d.email,
-                        totalHours: d.totalHours,
-                        projectsWorkedOn: d.projectsWorkedOn,
-                    })),
-                    analytics
-                }
+                data: { metrics, projects, designers: designers.map(d => ({
+                    name: d.name, email: d.email, totalHours: d.totalHours, projectsWorkedOn: d.projectsWorkedOn,
+                })), analytics }
             });
 
         } catch (error) {
@@ -210,7 +197,324 @@ timesheetsRouter.get('/', async (req, res) => {
         }
     }
 
-    // 2. ================== GET TIMESHEETS FOR ONE PROJECT ==================
+    if (action === 'all') {
+        if (!['coo', 'director', 'hr'].includes(userRole)) {
+            return res.status(403).json({ success: false, error: 'Access denied. COO/Director/HR only.' });
+        }
+        
+        try {
+            const timesheets = [];
+            const snapshot = await db.collection('timesheets')
+                .orderBy('date', 'desc')
+                .get();
+            
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                timesheets.push({ id: doc.id, ...data, date: data.date });
+            });
+            
+            return res.status(200).json({ success: true, data: timesheets });
+        } catch (error) {
+            console.error('Error in GET /timesheets (all):', error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+    }
+
+    if (action === 'designer_weekly_report') {
+        if (!['coo', 'director', 'hr'].includes(userRole)) {
+            return res.status(403).json({ success: false, error: 'Access denied. COO/Director/HR only.' });
+        }
+        
+        try {
+            const timesheetsSnapshot = await db.collection('timesheets').get();
+            const designersSnapshot = await db.collection('users').where('role', '==', 'designer').get();
+            
+            const designerLookup = {};
+            designersSnapshot.forEach(doc => {
+                const data = doc.data();
+                designerLookup[doc.id] = { uid: doc.id, name: data.name, email: data.email };
+            });
+            
+            const designerMap = {};
+            const weeklyBreakdown = {};
+            const monthlyBreakdown = {};
+            
+            timesheetsSnapshot.forEach(doc => {
+                const entry = doc.data();
+                const dUid = entry.designerUid;
+                const designerName = entry.designerName || designerLookup[dUid]?.name || 'Unknown';
+                const designerEmail = entry.designerEmail || designerLookup[dUid]?.email || '';
+                const hours = parseFloat(entry.hours) || 0;
+                
+                const entryDate = parseDate(entry.date);
+                if (!entryDate || isNaN(entryDate.getTime())) return;
+                
+                const weekStart = getWeekStart(entryDate);
+                const weekKey = weekStart.toISOString().split('T')[0];
+                const monthStart = getMonthStart(entryDate);
+                const monthKey = monthStart.toISOString().split('T')[0];
+                const dayKey = entryDate.toISOString().split('T')[0];
+                
+                if (!designerMap[dUid]) {
+                    designerMap[dUid] = {
+                        uid: dUid,
+                        name: designerName,
+                        email: designerEmail,
+                        totalHours: 0,
+                        weeklyHours: {},
+                        monthlyHours: {},
+                        dailyHours: {},
+                        projectsWorked: new Set(),
+                        workingDays: new Set()
+                    };
+                }
+                
+                designerMap[dUid].totalHours += hours;
+                designerMap[dUid].weeklyHours[weekKey] = (designerMap[dUid].weeklyHours[weekKey] || 0) + hours;
+                designerMap[dUid].monthlyHours[monthKey] = (designerMap[dUid].monthlyHours[monthKey] || 0) + hours;
+                designerMap[dUid].dailyHours[dayKey] = (designerMap[dUid].dailyHours[dayKey] || 0) + hours;
+                designerMap[dUid].workingDays.add(dayKey);
+                if (entry.projectId) {
+                    designerMap[dUid].projectsWorked.add(entry.projectId);
+                }
+                
+                if (!weeklyBreakdown[weekKey]) {
+                    weeklyBreakdown[weekKey] = { total: 0, designerCount: new Set() };
+                }
+                weeklyBreakdown[weekKey].total += hours;
+                weeklyBreakdown[weekKey].designerCount.add(dUid);
+                
+                if (!monthlyBreakdown[monthKey]) {
+                    monthlyBreakdown[monthKey] = { total: 0, designerCount: new Set() };
+                }
+                monthlyBreakdown[monthKey].total += hours;
+                monthlyBreakdown[monthKey].designerCount.add(dUid);
+            });
+            
+            const designerStats = Object.values(designerMap).map(d => {
+                const weeks = Object.keys(d.weeklyHours);
+                const months = Object.keys(d.monthlyHours);
+                const totalWeeks = weeks.length || 1;
+                const totalMonths = months.length || 1;
+                const avgWeeklyHours = d.totalHours / totalWeeks;
+                const avgMonthlyHours = d.totalHours / totalMonths;
+                const uniqueDays = d.workingDays.size;
+                const avgDailyHours = uniqueDays > 0 ? d.totalHours / uniqueDays : 0;
+                
+                return {
+                    uid: d.uid,
+                    name: d.name,
+                    email: d.email,
+                    totalHours: Math.round(d.totalHours * 100) / 100,
+                    weeksActive: totalWeeks,
+                    monthsActive: totalMonths,
+                    avgWeeklyHours: Math.round(avgWeeklyHours * 100) / 100,
+                    avgMonthlyHours: Math.round(avgMonthlyHours * 100) / 100,
+                    avgDailyHours: Math.round(avgDailyHours * 100) / 100,
+                    projectsWorked: d.projectsWorked.size,
+                    uniqueWorkingDays: uniqueDays,
+                    weeklyHours: d.weeklyHours,
+                    monthlyHours: d.monthlyHours
+                };
+            }).sort((a, b) => b.totalHours - a.totalHours);
+            
+            const weeklyTotals = Object.entries(weeklyBreakdown)
+                .map(([week, data]) => ({
+                    week,
+                    weekLabel: formatWeekLabel(new Date(week)),
+                    total: Math.round(data.total * 100) / 100,
+                    designerCount: data.designerCount.size,
+                    avgPerDesigner: Math.round((data.total / data.designerCount.size) * 100) / 100
+                }))
+                .sort((a, b) => new Date(b.week) - new Date(a.week))
+                .slice(0, 16)
+                .reverse();
+            
+            const monthlyTotals = Object.entries(monthlyBreakdown)
+                .map(([month, data]) => ({
+                    month,
+                    monthLabel: formatMonthLabel(new Date(month)),
+                    total: Math.round(data.total * 100) / 100,
+                    designerCount: data.designerCount.size,
+                    avgPerDesigner: Math.round((data.total / data.designerCount.size) * 100) / 100
+                }))
+                .sort((a, b) => new Date(b.month) - new Date(a.month))
+                .slice(0, 12)
+                .reverse();
+            
+            const summary = {
+                totalDesigners: designerStats.length,
+                totalHoursAllTime: Math.round(designerStats.reduce((sum, d) => sum + d.totalHours, 0) * 100) / 100,
+                avgHoursPerDesigner: designerStats.length > 0 
+                    ? Math.round((designerStats.reduce((sum, d) => sum + d.totalHours, 0) / designerStats.length) * 100) / 100
+                    : 0,
+                weeksTracked: weeklyTotals.length,
+                monthsTracked: monthlyTotals.length
+            };
+            
+            return res.status(200).json({
+                success: true,
+                data: { designers: designerStats, weeklyTotals, monthlyTotals, summary }
+            });
+            
+        } catch (error) {
+            console.error('Error in GET /timesheets (designer_weekly_report):', error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+    }
+
+    if (action === 'my_analytics') {
+        try {
+            const timesheets = [];
+            const snapshot = await db.collection('timesheets')
+                .where('designerUid', '==', designerUid)
+                .orderBy('date', 'desc')
+                .get();
+            
+            snapshot.forEach(doc => timesheets.push({ id: doc.id, ...doc.data() }));
+            
+            const dailyHours = {};
+            const weeklyHours = {};
+            const monthlyHours = {};
+            const projectHours = {};
+            let totalHours = 0;
+            const workingDays = new Set();
+            
+            timesheets.forEach(entry => {
+                const hours = parseFloat(entry.hours) || 0;
+                const entryDate = parseDate(entry.date);
+                if (!entryDate || isNaN(entryDate.getTime())) return;
+                
+                const dayKey = entryDate.toISOString().split('T')[0];
+                const weekStart = getWeekStart(entryDate);
+                const weekKey = weekStart.toISOString().split('T')[0];
+                const monthStart = getMonthStart(entryDate);
+                const monthKey = monthStart.toISOString().split('T')[0];
+                
+                totalHours += hours;
+                workingDays.add(dayKey);
+                
+                if (!dailyHours[dayKey]) {
+                    dailyHours[dayKey] = { date: dayKey, hours: 0, entries: [] };
+                }
+                dailyHours[dayKey].hours += hours;
+                dailyHours[dayKey].entries.push({
+                    projectName: entry.projectName || 'Unknown',
+                    projectCode: entry.projectCode || '',
+                    hours: hours,
+                    description: entry.description || ''
+                });
+                
+                if (!weeklyHours[weekKey]) {
+                    weeklyHours[weekKey] = { 
+                        week: weekKey, 
+                        weekLabel: formatWeekLabel(weekStart), 
+                        hours: 0, 
+                        daysWorked: new Set(),
+                        projects: new Set()
+                    };
+                }
+                weeklyHours[weekKey].hours += hours;
+                weeklyHours[weekKey].daysWorked.add(dayKey);
+                if (entry.projectId) weeklyHours[weekKey].projects.add(entry.projectId);
+                
+                if (!monthlyHours[monthKey]) {
+                    monthlyHours[monthKey] = { 
+                        month: monthKey, 
+                        monthLabel: formatMonthLabel(monthStart), 
+                        hours: 0,
+                        daysWorked: new Set(),
+                        projects: new Set()
+                    };
+                }
+                monthlyHours[monthKey].hours += hours;
+                monthlyHours[monthKey].daysWorked.add(dayKey);
+                if (entry.projectId) monthlyHours[monthKey].projects.add(entry.projectId);
+                
+                const projKey = entry.projectId || 'unknown';
+                if (!projectHours[projKey]) {
+                    projectHours[projKey] = {
+                        projectId: entry.projectId,
+                        projectName: entry.projectName || 'Unknown',
+                        projectCode: entry.projectCode || '',
+                        hours: 0,
+                        entries: 0
+                    };
+                }
+                projectHours[projKey].hours += hours;
+                projectHours[projKey].entries += 1;
+            });
+            
+            const dailyData = Object.values(dailyHours)
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .slice(0, 30);
+            
+            const weeklyData = Object.values(weeklyHours)
+                .map(w => ({
+                    ...w,
+                    daysWorked: w.daysWorked.size,
+                    projects: w.projects.size,
+                    avgPerDay: w.daysWorked.size > 0 ? Math.round((w.hours / w.daysWorked.size) * 100) / 100 : 0
+                }))
+                .sort((a, b) => new Date(b.week) - new Date(a.week))
+                .slice(0, 12);
+            
+            const monthlyData = Object.values(monthlyHours)
+                .map(m => ({
+                    ...m,
+                    daysWorked: m.daysWorked.size,
+                    projects: m.projects.size,
+                    avgPerDay: m.daysWorked.size > 0 ? Math.round((m.hours / m.daysWorked.size) * 100) / 100 : 0
+                }))
+                .sort((a, b) => new Date(b.month) - new Date(a.month))
+                .slice(0, 12);
+            
+            const projectData = Object.values(projectHours)
+                .sort((a, b) => b.hours - a.hours);
+            
+            const uniqueDays = workingDays.size;
+            const uniqueWeeks = Object.keys(weeklyHours).length;
+            const uniqueMonths = Object.keys(monthlyHours).length;
+            
+            const summary = {
+                totalHours: Math.round(totalHours * 100) / 100,
+                totalWorkingDays: uniqueDays,
+                totalWeeks: uniqueWeeks,
+                totalMonths: uniqueMonths,
+                totalProjects: Object.keys(projectHours).length,
+                avgDailyHours: uniqueDays > 0 ? Math.round((totalHours / uniqueDays) * 100) / 100 : 0,
+                avgWeeklyHours: uniqueWeeks > 0 ? Math.round((totalHours / uniqueWeeks) * 100) / 100 : 0,
+                avgMonthlyHours: uniqueMonths > 0 ? Math.round((totalHours / uniqueMonths) * 100) / 100 : 0
+            };
+            
+            const today = new Date();
+            const thisWeekKey = getWeekStart(today).toISOString().split('T')[0];
+            const thisMonthKey = getMonthStart(today).toISOString().split('T')[0];
+            
+            const currentPeriod = {
+                todayHours: dailyHours[today.toISOString().split('T')[0]]?.hours || 0,
+                thisWeekHours: weeklyHours[thisWeekKey]?.hours || 0,
+                thisMonthHours: monthlyHours[thisMonthKey]?.hours || 0
+            };
+            
+            return res.status(200).json({
+                success: true,
+                data: {
+                    summary,
+                    currentPeriod,
+                    daily: dailyData,
+                    weekly: weeklyData.reverse(),
+                    monthly: monthlyData.reverse(),
+                    byProject: projectData
+                }
+            });
+            
+        } catch (error) {
+            console.error('Error in GET /timesheets (my_analytics):', error);
+            return res.status(500).json({ success: false, error: error.message });
+        }
+    }
+
     if (projectId) {
         try {
             const timesheets = [];
@@ -227,7 +531,6 @@ timesheetsRouter.get('/', async (req, res) => {
         }
     }
 
-    // 3. ================== GET MY TIMESHEETS (DESIGNER) ==================
     try {
         const timesheets = [];
         const snapshot = await db.collection('timesheets')
@@ -243,21 +546,14 @@ timesheetsRouter.get('/', async (req, res) => {
     }
 });
 
-
-/**
- * POST /api/timesheets
- * A designer logs new hours.
- */
 timesheetsRouter.post('/', async (req, res) => {
     
-    // --- FIX: Add internal auth check ---
     try {
         await util.promisify(verifyToken)(req, res);
     } catch (error) {
         console.error("Auth error in POST /api/timesheets:", error);
         return res.status(401).json({ success: false, error: 'Authentication failed', message: error.message });
     }
-    // --- End of Fix ---
 
     try {
         const { projectId, date, hours, description } = req.body;
@@ -267,7 +563,6 @@ timesheetsRouter.post('/', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Missing required fields.' });
         }
 
-        // --- 1. Get Project and Current Hours ---
         const projectDoc = await db.collection('projects').doc(projectId).get();
         if (!projectDoc.exists) {
             return res.status(404).json({ success: false, error: 'Project not found.' });
@@ -276,7 +571,6 @@ timesheetsRouter.post('/', async (req, res) => {
         const projectData = projectDoc.data();
         const totalHours = await getAggregatedProjectHours(projectId);
 
-        // --- 2. Check Allocation ---
         const allocatedHours = projectData.maxAllocatedHours || 0;
         const additionalHours = projectData.additionalHours || 0;
         const totalAllocation = allocatedHours + additionalHours;
@@ -291,7 +585,6 @@ timesheetsRouter.post('/', async (req, res) => {
             });
         }
 
-        // --- 3. Add Timesheet Entry ---
         const newEntry = {
             projectId,
             projectName: projectData.projectName,
@@ -302,13 +595,11 @@ timesheetsRouter.post('/', async (req, res) => {
             designerUid: uid,
             designerName: name,
             designerEmail: email,
-            status: 'approved', // Auto-approved if within budget
+            status: 'approved',
             createdAt: FieldValue.serverTimestamp()
         };
 
         const docRef = await db.collection('timesheets').add(newEntry);
-
-        // --- 4. Update Project's hoursLogged (denormalized) ---
         await updateProjectHoursLogged(projectId);
 
         return res.status(201).json({ success: true, data: { id: docRef.id, ...newEntry } });
@@ -319,20 +610,14 @@ timesheetsRouter.post('/', async (req, res) => {
     }
 });
 
-/**
- * DELETE /api/timesheets?id=...
- * A designer deletes one of their own timesheet entries.
- */
 timesheetsRouter.delete('/', async (req, res) => {
     
-    // --- FIX: Add internal auth check ---
     try {
         await util.promisify(verifyToken)(req, res);
     } catch (error) {
         console.error("Auth error in DELETE /api/timesheets:", error);
         return res.status(401).json({ success: false, error: 'Authentication failed', message: error.message });
     }
-    // --- End of Fix ---
 
     try {
         const { id } = req.query;
@@ -351,18 +636,13 @@ timesheetsRouter.delete('/', async (req, res) => {
 
         const data = doc.data();
 
-        // Only allow designer to delete their own entry
         if (data.designerUid !== uid) {
             return res.status(403).json({ success: false, error: 'You are not authorized to delete this entry.' });
         }
 
-        // Store projectId before deleting
         const projectId = data.projectId;
-
-        // Delete the entry
         await docRef.delete();
 
-        // Update the project's total logged hours
         if (projectId) {
             await updateProjectHoursLogged(projectId);
         }
@@ -375,34 +655,17 @@ timesheetsRouter.delete('/', async (req, res) => {
     }
 });
 
-
-// ============================================
-// TIME REQUESTS ROUTER (/api/time-requests)
-// ============================================
-
-/**
- * GET /api/time-requests
- * Handles:
- * 1. ?status=pending (for COO/Director)
- * 2. ?id=... (for COO/Director single view)
- * 3. No query (for a designer getting their own requests)
- */
 timeRequestRouter.get('/', async (req, res) => {
-
-    // --- FIX: Add internal auth check ---
     try {
         await util.promisify(verifyToken)(req, res);
     } catch (error) {
-        console.error("Auth error in GET /api/time-requests:", error);
         return res.status(401).json({ success: false, error: 'Authentication failed', message: error.message });
     }
-    // --- End of Fix ---
 
     const { status, id } = req.query;
-    const { uid, role } = req.user; // This will now work
+    const { uid, role } = req.user;
 
     try {
-        // 1. ================== COO: Get Pending Requests ==================
         if (status === 'pending' && (role === 'coo' || role === 'director')) {
             const requests = [];
             const snapshot = await db.collection('time-requests')
@@ -414,7 +677,6 @@ timeRequestRouter.get('/', async (req, res) => {
             return res.status(200).json({ success: true, data: requests });
         }
 
-        // 2. ================== COO: Get Single Request ==================
         if (id && (role === 'coo' || role === 'director')) {
             const doc = await db.collection('time-requests').doc(id).get();
             if (!doc.exists) {
@@ -423,7 +685,6 @@ timeRequestRouter.get('/', async (req, res) => {
             return res.status(200).json({ success: true, data: { id: doc.id, ...doc.data() } });
         }
 
-        // 3. ================== Designer: Get My Requests ==================
         const requests = [];
         const snapshot = await db.collection('time-requests')
             .where('designerUid', '==', uid)
@@ -439,20 +700,12 @@ timeRequestRouter.get('/', async (req, res) => {
     }
 });
 
-/**
- * POST /api/time-requests
- * A designer requests additional hours for a project.
- */
 timeRequestRouter.post('/', async (req, res) => {
-    
-    // --- FIX: Add internal auth check ---
     try {
         await util.promisify(verifyToken)(req, res);
     } catch (error) {
-        console.error("Auth error in POST /api/time-requests:", error);
         return res.status(401).json({ success: false, error: 'Authentication failed', message: error.message });
     }
-    // --- End of Fix ---
 
     try {
         const { projectId, requestedHours, reason, pendingTimesheetData } = req.body;
@@ -462,7 +715,6 @@ timeRequestRouter.post('/', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Missing required fields.' });
         }
 
-        // Get project info
         const projectDoc = await db.collection('projects').doc(projectId).get();
         if (!projectDoc.exists) {
             return res.status(404).json({ success: false, error: 'Project not found.' });
@@ -489,7 +741,6 @@ timeRequestRouter.post('/', async (req, res) => {
         };
 
         const docRef = await db.collection('time-requests').add(newRequest);
-
         return res.status(201).json({ success: true, data: { id: docRef.id } });
 
     } catch (error) {
@@ -498,25 +749,17 @@ timeRequestRouter.post('/', async (req, res) => {
     }
 });
 
-/**
- * PUT /api/time-requests?id=...
- * COO/Director approves or rejects a time request.
- */
 timeRequestRouter.put('/', async (req, res) => {
-    
-    // --- FIX: Add internal auth check ---
     try {
         await util.promisify(verifyToken)(req, res);
     } catch (error) {
-        console.error("Auth error in PUT /api/time-requests:", error);
         return res.status(401).json({ success: false, error: 'Authentication failed', message: error.message });
     }
-    // --- End of Fix ---
 
     try {
         const { id } = req.query;
         const { action, approvedHours, comment, applyToTimesheet } = req.body;
-        const { uid, name } = req.user; // Reviewer
+        const { uid, name } = req.user;
 
         if (!id || !action) {
             return res.status(400).json({ success: false, error: 'Missing request ID or action.' });
@@ -546,12 +789,10 @@ timeRequestRouter.put('/', async (req, res) => {
             }
             updateData.approvedHours = Number(approvedHours);
 
-            // --- 1. Update Project's Additional Hours ---
             await projectRef.update({
                 additionalHours: FieldValue.increment(Number(approvedHours))
             });
 
-            // --- 2. If a timesheet was pending, add it now ---
             if (applyToTimesheet && requestData.pendingTimesheetData) {
                 const tsData = requestData.pendingTimesheetData;
                 const newEntry = {
@@ -569,30 +810,17 @@ timeRequestRouter.put('/', async (req, res) => {
                     createdAt: FieldValue.serverTimestamp()
                 };
                 await db.collection('timesheets').add(newEntry);
-                // Trigger an update of the project's logged hours
                 await updateProjectHoursLogged(requestData.projectId);
             }
         }
 
-        // --- 3. Update the Time Request itself ---
         await requestRef.update(updateData);
-
         return res.status(200).json({ success: true, data: updateData });
 
     } catch (error) {
         console.error('Error in PUT /time-requests:', error);
-        // --- THIS IS THE LINE WITH THE SYNTAX ERROR ---
-        // I have fixed it to be a proper return statement.
-        return res.status(500).json({ 
-            success: false, 
-            error: 'Internal server error.'
-        });
+        return res.status(500).json({ success: false, error: 'Internal server error.' });
     }
 });
 
-
-// Export both routers
-module.exports = {
-    timesheetsRouter,
-    timeRequestRouter
-};
+module.exports = { timesheetsRouter, timeRequestRouter };
