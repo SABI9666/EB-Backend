@@ -198,8 +198,8 @@ timesheetsRouter.get('/', async (req, res) => {
     }
 
     if (action === 'all') {
-        if (!['coo', 'director', 'hr'].includes(userRole)) {
-            return res.status(403).json({ success: false, error: 'Access denied. COO/Director/HR only.' });
+        if (!['coo', 'director', 'hr', 'bdm'].includes(userRole)) {
+            return res.status(403).json({ success: false, error: 'Access denied. Management only.' });
         }
         
         try {
@@ -221,8 +221,8 @@ timesheetsRouter.get('/', async (req, res) => {
     }
 
     if (action === 'designer_weekly_report') {
-        if (!['coo', 'director', 'hr'].includes(userRole)) {
-            return res.status(403).json({ success: false, error: 'Access denied. COO/Director/HR only.' });
+        if (!['coo', 'director', 'hr', 'bdm'].includes(userRole)) {
+            return res.status(403).json({ success: false, error: 'Access denied. Management only.' });
         }
         
         try {
