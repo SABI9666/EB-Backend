@@ -79,7 +79,14 @@ const handler = async (req, res) => {
             
             // COO/Director sees all pending requests
             if (['coo', 'director'].includes(req.user.role)) {
-                if (status) {
+                if (status === 'approved_pending_allocation') {
+                    // Special status: approved requests that need COO allocation
+                    // Fetch all approved requests and filter in code (handles missing field)
+                    query = query.where('status', '==', 'approved');
+                } else if (status === 'all_approved') {
+                    // Fetch all approved requests
+                    query = query.where('status', '==', 'approved');
+                } else if (status) {
                     query = query.where('status', '==', status);
                 } else {
                     query = query.where('status', '==', 'pending');
@@ -99,7 +106,15 @@ const handler = async (req, res) => {
             }
             
             const snapshot = await query.limit(50).get();
-            const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            let requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            
+            // Filter for approved_pending_allocation: only show approved requests that haven't been allocated
+            if (status === 'approved_pending_allocation') {
+                requests = requests.filter(req => 
+                    req.status === 'approved' && 
+                    (req.allocatedToDesigner === false || req.allocatedToDesigner === undefined || req.allocatedToDesigner === null)
+                );
+            }
             
             // Enhance with project data
             const populatedRequests = await Promise.all(requests.map(async (request) => {
@@ -291,7 +306,7 @@ const handler = async (req, res) => {
                 return res.status(400).json({ success: false, error: 'Request ID is required' });
             }
             
-            if (!action || !['approve', 'reject', 'request_info'].includes(action)) {
+            if (!action || !['approve', 'reject', 'request_info', 'allocate'].includes(action)) {
                 return res.status(400).json({ success: false, error: 'Invalid action' });
             }
             
@@ -335,6 +350,10 @@ const handler = async (req, res) => {
                 
                 updates.status = 'approved';
                 updates.approvedHours = hoursToApprove;
+                // Track if COO has allocated these approved hours to a designer
+                // Director approval sets this to false, COO allocation sets it to true
+                updates.allocatedToDesigner = false;
+                updates.allocationPendingCOO = true;
                 
                 // Update project allocation
                 await db.collection('projects').doc(request.projectId).update({
@@ -416,6 +435,74 @@ const handler = async (req, res) => {
                 updates.status = 'info_requested';
                 activityDetails = `Requested more information for time request on ${request.projectName}`;
                 notificationMessage = `More information needed for your ${request.requestedHours}h request: ${comment}`;
+            } else if (action === 'allocate') {
+                // COO allocates the approved hours to a designer
+                if (req.user.role !== 'coo') {
+                    return res.status(403).json({ 
+                        success: false, 
+                        error: 'Only COO can allocate approved hours to designers' 
+                    });
+                }
+                
+                if (request.status !== 'approved') {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'Can only allocate approved requests' 
+                    });
+                }
+                
+                const { targetDesignerUid, targetDesignerName, allocatedHours } = req.body;
+                
+                if (!targetDesignerUid || !allocatedHours) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'Target designer and allocated hours are required' 
+                    });
+                }
+                
+                updates.allocatedToDesigner = true;
+                updates.allocationPendingCOO = false;
+                updates.allocatedDesignerUid = targetDesignerUid;
+                updates.allocatedDesignerName = targetDesignerName;
+                updates.allocatedByUid = req.user.uid;
+                updates.allocatedByName = req.user.name;
+                updates.allocatedAt = admin.firestore.FieldValue.serverTimestamp();
+                updates.hoursAllocatedToDesigner = parseFloat(allocatedHours);
+                
+                // Update the project's designer-specific allocation if using designerHours structure
+                const projectRef = db.collection('projects').doc(request.projectId);
+                const projectDoc = await projectRef.get();
+                
+                if (projectDoc.exists) {
+                    const projectData = projectDoc.data();
+                    const designerHours = projectData.designerHours || {};
+                    const currentDesignerHours = designerHours[targetDesignerUid] || 0;
+                    
+                    designerHours[targetDesignerUid] = currentDesignerHours + parseFloat(allocatedHours);
+                    
+                    await projectRef.update({
+                        designerHours: designerHours,
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                }
+                
+                activityDetails = `Allocated ${allocatedHours}h approved additional time to ${targetDesignerName} for ${request.projectName}`;
+                notificationMessage = `${allocatedHours}h has been allocated to you for "${request.projectName}"`;
+                
+                // Notify the target designer
+                await db.collection('notifications').add({
+                    type: 'additional_time_allocated',
+                    recipientUid: targetDesignerUid,
+                    recipientRole: 'designer',
+                    message: notificationMessage,
+                    projectId: request.projectId,
+                    projectName: request.projectName,
+                    requestId: id,
+                    allocatedHours: parseFloat(allocatedHours),
+                    priority: 'high',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    isRead: false
+                });
             }
             
             await requestRef.update(updates);
