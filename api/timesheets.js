@@ -8,6 +8,12 @@ const util = require('util');
 const timesheetsRouter = express.Router();
 const timeRequestRouter = express.Router();
 
+// ============================================
+// NON-PROJECT WORK TYPES (Training / Sample Designing)
+// ============================================
+const NON_PROJECT_WORK_TYPES = ['training', 'sample_designing'];
+const NON_PROJECT_IDS = ['TRAINING', 'SAMPLE_DESIGNING'];
+
 const getAggregatedProjectHours = async (projectId) => {
     try {
         const timesheetsSnapshot = await db.collection('timesheets')
@@ -556,10 +562,49 @@ timesheetsRouter.post('/', async (req, res) => {
     }
 
     try {
-        const { projectId, date, hours, description } = req.body;
+        const { projectId, date, hours, description, workType, isNonProjectWork } = req.body;
         const { uid, name, email } = req.user;
 
-        if (!projectId || !date || !hours || !description) {
+        // Validate common required fields
+        if (!date || !hours || !description) {
+            return res.status(400).json({ success: false, error: 'Missing required fields (date, hours, description).' });
+        }
+
+        // ============================================
+        // HANDLE NON-PROJECT WORK (Training / Sample Designing)
+        // ============================================
+        if (isNonProjectWork || NON_PROJECT_WORK_TYPES.includes(workType) || NON_PROJECT_IDS.includes(projectId)) {
+            console.log(`📚 Logging non-project work: ${workType || projectId} for ${name}`);
+            
+            const isTraining = workType === 'training' || projectId === 'TRAINING';
+            const workTypeLabel = isTraining ? 'Training' : 'Sample Designing';
+            
+            const newEntry = {
+                projectId: isTraining ? 'TRAINING' : 'SAMPLE_DESIGNING',
+                projectName: workTypeLabel,
+                projectCode: isTraining ? 'TRAINING' : 'SAMPLE',
+                workType: isTraining ? 'training' : 'sample_designing',
+                isNonProjectWork: true,
+                date: new Date(date),
+                hours: Number(hours),
+                description,
+                designerUid: uid,
+                designerName: name,
+                designerEmail: email,
+                status: 'approved',
+                createdAt: FieldValue.serverTimestamp()
+            };
+
+            const docRef = await db.collection('timesheets').add(newEntry);
+            console.log(`✅ Non-project timesheet created: ${docRef.id}`);
+            
+            return res.status(201).json({ success: true, data: { id: docRef.id, ...newEntry } });
+        }
+
+        // ============================================
+        // HANDLE PROJECT WORK (Original Logic - Unchanged)
+        // ============================================
+        if (!projectId) {
             return res.status(400).json({ success: false, error: 'Missing required fields.' });
         }
 
@@ -643,7 +688,8 @@ timesheetsRouter.delete('/', async (req, res) => {
         const projectId = data.projectId;
         await docRef.delete();
 
-        if (projectId) {
+        // Only update project hours for real projects (not Training/Sample Designing)
+        if (projectId && !NON_PROJECT_IDS.includes(projectId)) {
             await updateProjectHoursLogged(projectId);
         }
 
