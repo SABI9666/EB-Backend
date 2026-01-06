@@ -35,7 +35,13 @@ const EMAIL_RECIPIENT_MAP = {
   'variation.approved_detail': ['design_lead', 'bdm', 'director', 'coo'], // Variation approval with hour/rate details
   'invoice.created': ['coo', 'director', 'bdm'], // Invoice created
   'invoice.payment_due': ['coo', 'director', 'bdm'], // Payment due reminder
-  'invoice.overdue': ['coo', 'director', 'bdm'] // Overdue payment notification
+  'invoice.overdue': ['coo', 'director', 'bdm'], // Overdue payment notification
+  
+  // Leave Request notification types
+  'leave.submitted': ['coo', 'director', 'hr'], // Employee submits leave → COO, Director, HR notified
+  'leave.approved': [], // Approval notification → Employee (dynamic)
+  'leave.rejected': [], // Rejection notification → Employee (dynamic)
+  'leave.stage_approved': ['hr'] // Stage approval → HR notified for final processing
 };
 
 // ==========================================
@@ -451,6 +457,91 @@ const EMAIL_TEMPLATE_MAP = {
       </p>
       ${getButton('View Project', DASHBOARD_URL)}
     `)
+  },
+
+  // =============== LEAVE REQUEST TEMPLATES ===============
+  'leave.submitted': {
+    subject: '🏖️ Leave Request: {{employeeName}} - {{totalDays}} Day(s)',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        🏖️ New Leave Request Submitted
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        An employee has submitted a leave request that requires your attention:
+      </p>
+      ${getInfoBox([
+        { label: 'Employee', value: data.employeeName || 'N/A' },
+        { label: 'Department', value: data.department || 'N/A' },
+        { label: 'Leave Period', value: `${formatDate(data.fromDate)} to ${formatDate(data.toDate)}` },
+        { label: 'Total Days', value: `${data.totalDays || 1} day(s)` },
+        { label: 'Reason', value: data.reason || 'No reason provided' },
+        { label: 'Emergency Contact', value: data.emergencyContact || 'Not provided' }
+      ])}
+      ${getStatusBanner('This leave request is pending approval.', 'warning')}
+      ${getButton('Review Leave Requests', DASHBOARD_URL)}
+    `, 'Please review and process this leave request.')
+  },
+
+  'leave.approved': {
+    subject: '✅ Leave Approved: {{fromDate}} to {{toDate}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ✅ Your Leave Request Has Been Approved
+      </h2>
+      ${getStatusBanner('Great news! Your leave request has been approved.', 'success')}
+      ${getInfoBox([
+        { label: 'Leave Period', value: `${formatDate(data.fromDate)} to ${formatDate(data.toDate)}` },
+        { label: 'Total Days', value: `${data.totalDays || 1} day(s)` },
+        { label: 'Leave Type', value: data.leaveType || 'As assigned by HR' },
+        { label: 'Approved By', value: data.approvedBy || 'Management' }
+      ])}
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        Please ensure proper handover of your responsibilities before your leave begins.
+      </p>
+      ${getButton('View Leave Status', DASHBOARD_URL)}
+    `, 'Enjoy your time off!')
+  },
+
+  'leave.rejected': {
+    subject: '❌ Leave Request Not Approved: {{fromDate}} to {{toDate}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ❌ Leave Request Not Approved
+      </h2>
+      ${getStatusBanner('Unfortunately, your leave request could not be approved at this time.', 'error')}
+      ${getInfoBox([
+        { label: 'Leave Period', value: `${formatDate(data.fromDate)} to ${formatDate(data.toDate)}` },
+        { label: 'Total Days', value: `${data.totalDays || 1} day(s)` },
+        { label: 'Reviewed By', value: data.rejectedBy || 'Management' },
+        { label: 'Reason', value: data.rejectionReason || 'No reason provided' }
+      ])}
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        If you have questions, please contact HR or your supervisor for more details.
+      </p>
+      ${getButton('View Leave Status', DASHBOARD_URL)}
+    `, 'Please contact HR if you have questions.')
+  },
+
+  'leave.stage_approved': {
+    subject: '📋 Leave Stage Approved: {{employeeName}} - Pending HR Final Approval',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        📋 Leave Request Stage Approved
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A leave request has passed Stage ${data.stage || '1'} approval and requires HR processing:
+      </p>
+      ${getInfoBox([
+        { label: 'Employee', value: data.employeeName || 'N/A' },
+        { label: 'Department', value: data.department || 'N/A' },
+        { label: 'Leave Period', value: `${formatDate(data.fromDate)} to ${formatDate(data.toDate)}` },
+        { label: 'Total Days', value: `${data.totalDays || 1} day(s)` },
+        { label: 'Approved By', value: data.approvedBy || 'N/A' },
+        { label: 'Current Stage', value: `Stage ${data.currentStage || '1'} of ${data.totalStages || '3'}` }
+      ])}
+      ${getStatusBanner('Please assign leave type and complete final processing.', 'info')}
+      ${getButton('Process Leave Request', DASHBOARD_URL)}
+    `, 'HR action required for final approval.')
   }
 };
 
@@ -587,6 +678,24 @@ async function sendEmailNotification(event, data) {
       }
   }
 
+  // Add Employee for leave request approval/rejection notifications
+  if (['leave.approved', 'leave.rejected'].includes(event)) {
+      let employeeEmail = data.employeeEmail || data.submittedBy;
+      
+      if (employeeEmail) {
+          recipients.push(employeeEmail);
+          console.log(`👤 Added Employee for leave notification: ${employeeEmail}`);
+      } else {
+          console.warn(`⚠️ No employee email found for leave event: ${event}`);
+      }
+  }
+  
+  // Add Team Lead for leave request if selected
+  if (event === 'leave.submitted' && data.selectedTeamLead) {
+      recipients.push(data.selectedTeamLead);
+      console.log(`👔 Added Team Lead for leave approval: ${data.selectedTeamLead}`);
+  }
+
   // 3. Clean List
   recipients = [...new Set(recipients.filter(e => e && e.includes('@')))];
 
@@ -604,28 +713,53 @@ async function sendEmailNotification(event, data) {
     const html = typeof tmpl.html === 'function' ? tmpl.html(data) : interpolate(tmpl.html, data);
     const subject = interpolate(tmpl.subject, data);
 
-    console.log(`🚀 Sending from [${FROM_EMAIL}] to [${recipients.length}] recipients...`);
+    console.log(`🚀 Sending from [${FROM_EMAIL}] to [${recipients.length}] recipients (individually for privacy)...`);
     console.log(`📧 Recipients: ${recipients.join(', ')}`);
     
-    // 5. Send via Resend
-    const result = await resend.emails.send({
-      from: FROM_EMAIL,
-      to: recipients,
-      subject: subject,
-      html: html
-    });
-
-    if (result.error) {
-        throw new Error(result.error.message);
+    // 5. Send via Resend - INDIVIDUAL EMAILS FOR PRIVACY
+    // Each recipient only sees their own email address
+    let successCount = 0;
+    let failedRecipients = [];
+    let lastMessageId = null;
+    
+    for (const recipient of recipients) {
+        try {
+            const result = await resend.emails.send({
+                from: FROM_EMAIL,
+                to: [recipient],  // Single recipient - they only see their own email
+                subject: subject,
+                html: html
+            });
+            
+            if (result.error) {
+                console.warn(`⚠️ Failed to send to ${recipient}: ${result.error.message}`);
+                failedRecipients.push(recipient);
+            } else {
+                successCount++;
+                lastMessageId = result.data?.id;
+                console.log(`  ✅ Sent to: ${recipient}`);
+            }
+        } catch (sendError) {
+            console.warn(`⚠️ Failed to send to ${recipient}: ${sendError.message}`);
+            failedRecipients.push(recipient);
+        }
     }
 
-    console.log(`✅ SENT! ID: ${result.data?.id}`);
+    if (successCount === 0) {
+        throw new Error('Failed to send to any recipient');
+    }
+
+    console.log(`✅ SENT! ${successCount}/${recipients.length} emails delivered`);
+    if (failedRecipients.length > 0) {
+        console.warn(`⚠️ Failed recipients: ${failedRecipients.join(', ')}`);
+    }
     console.log('📨 --- END EMAIL (SUCCESS) ---\n');
     return { 
       success: true, 
-      id: result.data?.id, 
-      recipients: recipients.length,
-      recipientList: recipients 
+      id: lastMessageId, 
+      recipients: successCount,
+      totalRecipients: recipients.length,
+      failedRecipients: failedRecipients
     };
 
   } catch (error) {
