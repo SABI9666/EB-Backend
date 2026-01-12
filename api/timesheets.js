@@ -655,6 +655,142 @@ timesheetsRouter.post('/', async (req, res) => {
     }
 });
 
+// ============================================
+// PUT - Update/Edit Timesheet Entry
+// Allows designers to edit their own pending entries (hours, project, date, description)
+// ============================================
+timesheetsRouter.put('/', async (req, res) => {
+    
+    try {
+        await util.promisify(verifyToken)(req, res);
+    } catch (error) {
+        console.error("Auth error in PUT /api/timesheets:", error);
+        return res.status(401).json({ success: false, error: 'Authentication failed', message: error.message });
+    }
+
+    try {
+        const { id } = req.query;
+        const { uid, name, email } = req.user;
+        const { projectId, hours, date, description } = req.body;
+
+        if (!id) {
+            return res.status(400).json({ success: false, error: 'Missing timesheet ID.' });
+        }
+
+        const docRef = db.collection('timesheets').doc(id);
+        const doc = await docRef.get();
+
+        if (!doc.exists) {
+            return res.status(404).json({ success: false, error: 'Timesheet entry not found.' });
+        }
+
+        const existingData = doc.data();
+
+        // Only the owner can edit their entry
+        if (existingData.designerUid !== uid) {
+            return res.status(403).json({ success: false, error: 'You are not authorized to edit this entry.' });
+        }
+
+        // Cannot edit approved entries
+        if (existingData.status === 'approved') {
+            return res.status(403).json({ success: false, error: 'Cannot edit approved timesheet entries.' });
+        }
+
+        const oldProjectId = existingData.projectId;
+        const oldHours = existingData.hours || 0;
+
+        // Build update object
+        const updateData = {
+            updatedAt: FieldValue.serverTimestamp()
+        };
+
+        // Update hours if provided
+        if (hours !== undefined && hours !== null) {
+            const newHours = Number(hours);
+            if (isNaN(newHours) || newHours <= 0) {
+                return res.status(400).json({ success: false, error: 'Invalid hours value.' });
+            }
+            if (newHours > 24) {
+                return res.status(400).json({ success: false, error: 'Hours cannot exceed 24 per entry.' });
+            }
+            updateData.hours = newHours;
+        }
+
+        // Update date if provided
+        if (date) {
+            updateData.date = new Date(date);
+        }
+
+        // Update description if provided
+        if (description !== undefined) {
+            updateData.description = description;
+        }
+
+        // Update project if provided (project change)
+        let newProjectId = oldProjectId;
+        if (projectId && projectId !== oldProjectId) {
+            // Validate new project exists and designer has access
+            if (!NON_PROJECT_IDS.includes(projectId)) {
+                const projectDoc = await db.collection('projects').doc(projectId).get();
+                if (!projectDoc.exists) {
+                    return res.status(404).json({ success: false, error: 'New project not found.' });
+                }
+                const projectData = projectDoc.data();
+                
+                // Check if designer is assigned to this project
+                const assignedDesigners = projectData.assignedDesigners || [];
+                const assignedDesignerUids = projectData.assignedDesignerUids || [];
+                if (!assignedDesigners.includes(uid) && !assignedDesignerUids.includes(uid)) {
+                    return res.status(403).json({ success: false, error: 'You are not assigned to this project.' });
+                }
+
+                updateData.projectId = projectId;
+                updateData.projectName = projectData.projectName;
+                updateData.projectCode = projectData.projectCode || '';
+                newProjectId = projectId;
+            } else {
+                // Handle non-project work types (Training, Sample Designing)
+                updateData.projectId = projectId;
+                updateData.projectName = projectId === 'TRAINING' ? 'Training' : 'Sample Designing';
+                updateData.projectCode = projectId;
+                newProjectId = projectId;
+            }
+        }
+
+        // Perform the update
+        await docRef.update(updateData);
+
+        // Update hours logged on affected projects
+        // If project changed, update both old and new project hours
+        if (newProjectId !== oldProjectId) {
+            // Update old project (decrease hours)
+            if (oldProjectId && !NON_PROJECT_IDS.includes(oldProjectId)) {
+                await updateProjectHoursLogged(oldProjectId);
+            }
+            // Update new project (increase hours)
+            if (newProjectId && !NON_PROJECT_IDS.includes(newProjectId)) {
+                await updateProjectHoursLogged(newProjectId);
+            }
+        } else if (updateData.hours !== undefined && updateData.hours !== oldHours) {
+            // Same project but hours changed
+            if (oldProjectId && !NON_PROJECT_IDS.includes(oldProjectId)) {
+                await updateProjectHoursLogged(oldProjectId);
+            }
+        }
+
+        console.log(`✅ Timesheet ${id} updated by ${name}`);
+        return res.status(200).json({ 
+            success: true, 
+            message: 'Timesheet entry updated successfully.',
+            data: { id, ...existingData, ...updateData }
+        });
+
+    } catch (error) {
+        console.error('Error in PUT /timesheets:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 timesheetsRouter.delete('/', async (req, res) => {
     
     try {
