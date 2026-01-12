@@ -691,11 +691,6 @@ timesheetsRouter.put('/', async (req, res) => {
             return res.status(403).json({ success: false, error: 'You are not authorized to edit this entry.' });
         }
 
-        // Cannot edit approved entries
-        if (existingData.status === 'approved') {
-            return res.status(403).json({ success: false, error: 'Cannot edit approved timesheet entries.' });
-        }
-
         const oldProjectId = existingData.projectId;
         const oldHours = existingData.hours || 0;
 
