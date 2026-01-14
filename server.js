@@ -1,4 +1,4 @@
-// server.js - Complete backend entry point with EMAIL + TIMESHEET + VARIATIONS + TIME-REQUESTS + ALLOCATION-REQUESTS API
+// server.js - Complete backend entry point with EMAIL + TIMESHEET + VARIATIONS + TIME-REQUESTS + ALLOCATION-REQUESTS + SCREENING API
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -101,7 +101,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         message: 'EBTracker Backend API',
-        version: '1.2.0',
+        version: '1.3.0',
         status: 'running',
         endpoints: [
             'GET  /health - Health check',
@@ -109,6 +109,7 @@ app.get('/', (req, res) => {
             'POST /api/allocation-requests - COO request allocation/budget change',
             'GET  /api/allocation-requests - Get pending requests',
             'PUT  /api/allocation-requests - Director approve/reject',
+            'POST /api/screening - Create/manage candidate screenings',
         ]
     });
 });
@@ -180,6 +181,12 @@ try {
     console.log('  Loading leave-requests...');
     const leaveRequestsHandler = require('./api/leave-requests');
 
+    // ============================================
+    // NEW: Load screening handler
+    // ============================================
+    console.log('  Loading screening...');
+    const screeningHandler = require('./api/screening');
+
     console.log('✅ All handlers loaded successfully');
 
     // Register routes
@@ -210,6 +217,11 @@ try {
     // ============================================
     app.use('/api/allocation-requests', allocationRequestsHandler);
     app.use('/api/leave-requests', leaveRequestsHandler);
+
+    // ============================================
+    // NEW: Register screening route
+    // ============================================
+    app.use('/api/screening', screeningHandler);
 
     console.log('✅ All routes registered');
 
@@ -249,7 +261,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('');
     console.log('╔═══════════════════════════════════════╗');
     console.log(`║  ✅ Server running on port ${PORT}      ║`);
-    console.log(`║  🌐 Environment: ${(process.env.NODE_ENV || 'development').padEnd(20)}║`);
+    console.log(`║  🌍 Environment: ${(process.env.NODE_ENV || 'development').padEnd(20)}║`);
     const admin = require('./api/_firebase-admin');
     console.log(`║  🔥 Firebase: ${(admin.apps.length > 0 ? 'Initialized' : 'Not initialized').padEnd(23)}║`);
     console.log('║  🌐 CORS: Enabled for Vercel           ║');
@@ -260,10 +272,11 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('   GET  /api/dashboard');
     console.log('   *    /api/proposals');
     console.log('   *    /api/projects');
-    console.log('   *    /api/allocation-requests  ← NEW');
-    console.log('   *    /api/leave-requests  ← NEW');
+    console.log('   *    /api/allocation-requests');
+    console.log('   *    /api/leave-requests');
     console.log('   *    /api/timesheets');
     console.log('   *    /api/time-requests');
+    console.log('   *    /api/screening  ← NEW');
     console.log('');
 });
 
@@ -287,4 +300,3 @@ process.on('SIGINT', () => {
 });
 
 module.exports = app;
-
