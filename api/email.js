@@ -41,7 +41,12 @@ const EMAIL_RECIPIENT_MAP = {
   'leave.submitted': ['coo', 'director', 'hr'], // Employee submits leave → COO, Director, HR notified
   'leave.approved': [], // Approval notification → Employee (dynamic)
   'leave.rejected': [], // Rejection notification → Employee (dynamic)
-  'leave.stage_approved': ['hr'] // Stage approval → HR notified for final processing
+  'leave.stage_approved': ['hr'], // Stage approval → HR notified for final processing
+  
+  // HR Screening / Interview notification types
+  'screening.interview_invitation': [], // Dynamic only - sent directly to candidate email
+  'screening.candidate_submitted': ['hr', 'coo'], // Candidate submitted assessment → HR, COO notified
+  'screening.rejected': [] // Dynamic only - sent to candidate
 };
 
 // ==========================================
@@ -542,6 +547,133 @@ const EMAIL_TEMPLATE_MAP = {
       ${getStatusBanner('Please assign leave type and complete final processing.', 'info')}
       ${getButton('Process Leave Request', DASHBOARD_URL)}
     `, 'HR action required for final approval.')
+  },
+
+  // =============== HR SCREENING / INTERVIEW TEMPLATES ===============
+  'screening.interview_invitation': {
+    subject: '🎉 Interview Invitation - {{position}} at EDANBROOK',
+    html: (data) => {
+      const formattedDate = data.interviewDateTime ? 
+        new Date(data.interviewDateTime).toLocaleString('en-IN', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+        }) : 'To be confirmed';
+      
+      return getEmailWrapper(`
+        <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+          🎉 Interview Invitation
+        </h2>
+        
+        ${getStatusBanner(`Congratulations! You have been shortlisted for the <strong>${data.position || 'N/A'}</strong> position at EDANBROOK.`, 'success')}
+        
+        <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+          Dear <strong>${data.candidateName || 'Candidate'}</strong>,
+        </p>
+        
+        <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+          We are pleased to inform you that based on your assessment, you have been selected for an interview. Please find the details below:
+        </p>
+        
+        ${getInfoBox([
+          { label: 'Position', value: data.position || 'N/A' },
+          { label: 'Date & Time', value: formattedDate },
+          { label: 'Interview Mode', value: data.meetingLink ? 'Online (Video Call)' : 'To be confirmed' },
+          { label: 'Assessment Score', value: data.score ? `${data.score}%` : 'N/A' }
+        ])}
+        
+        ${data.meetingLink ? `
+          <div style="text-align: center; margin: 30px 0;">
+            <p style="margin: 0 0 15px 0; color: #475569; font-size: 15px;">
+              Click the button below to join the interview:
+            </p>
+            ${getButton('🎥 Join Interview Meeting', data.meetingLink, '#10b981')}
+            <p style="margin: 15px 0 0 0; color: #94a3b8; font-size: 13px; word-break: break-all;">
+              Meeting Link: ${data.meetingLink}
+            </p>
+          </div>
+        ` : ''}
+        
+        ${data.notes ? `
+          <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
+            <p style="margin: 0 0 8px 0; color: #92400e; font-size: 14px; font-weight: 600;">📝 Additional Information:</p>
+            <p style="margin: 0; color: #92400e; font-size: 14px; line-height: 1.5; white-space: pre-wrap;">${data.notes}</p>
+          </div>
+        ` : ''}
+        
+        <p style="margin: 25px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+          Please confirm your availability by replying to this email at your earliest convenience.
+        </p>
+        
+        <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+          We look forward to speaking with you!
+        </p>
+        
+        <p style="margin: 25px 0 0 0; color: #1e293b; font-size: 15px;">
+          Best regards,<br>
+          <strong>EDANBROOK HR Team</strong>
+        </p>
+      `, 'Good luck with your interview!')
+    }
+  },
+
+  'screening.candidate_submitted': {
+    subject: '📝 New Candidate Assessment: {{candidateName}} - {{position}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        📝 New Candidate Assessment Received
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A candidate has completed their self-assessment and is awaiting review:
+      </p>
+      ${getInfoBox([
+        { label: 'Candidate Name', value: data.candidateName || 'N/A' },
+        { label: 'Email', value: data.candidateEmail || 'N/A' },
+        { label: 'Phone', value: data.candidatePhone || 'N/A' },
+        { label: 'Position Applied', value: data.position || 'N/A' },
+        { label: 'Experience', value: data.experience || 'N/A' },
+        { label: 'Expected Salary', value: data.expectedSalary || 'N/A' },
+        { label: 'Overall Score', value: data.score ? `${data.score}%` : 'N/A' }
+      ])}
+      ${data.score >= 80 ? getStatusBanner('⭐ High-scoring candidate! Consider prioritizing this application.', 'success') : 
+        data.score >= 60 ? getStatusBanner('Good candidate. Review assessment details for more information.', 'info') :
+        getStatusBanner('Review assessment details to evaluate candidate suitability.', 'warning')}
+      ${getButton('Review Candidate', DASHBOARD_URL)}
+    `, 'Please review this candidate assessment.')
+  },
+
+  'screening.rejected': {
+    subject: 'Application Update - {{position}} at EDANBROOK',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        Application Status Update
+      </h2>
+      
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        Dear <strong>${data.candidateName || 'Candidate'}</strong>,
+      </p>
+      
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        Thank you for your interest in the <strong>${data.position || 'N/A'}</strong> position at EDANBROOK and for taking the time to complete our assessment.
+      </p>
+      
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        After careful consideration, we regret to inform you that we have decided to move forward with other candidates whose qualifications more closely match our current requirements.
+      </p>
+      
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        We encourage you to apply for future openings that match your skills and experience. We wish you the best in your career endeavors.
+      </p>
+      
+      <p style="margin: 25px 0 0 0; color: #1e293b; font-size: 15px;">
+        Best regards,<br>
+        <strong>EDANBROOK HR Team</strong>
+      </p>
+    `, 'Thank you for your interest in EDANBROOK.')
   }
 };
 
@@ -694,6 +826,18 @@ async function sendEmailNotification(event, data) {
   if (event === 'leave.submitted' && data.selectedTeamLead) {
       recipients.push(data.selectedTeamLead);
       console.log(`👔 Added Team Lead for leave approval: ${data.selectedTeamLead}`);
+  }
+
+  // Add Candidate for HR screening interview invitations and rejections
+  if (['screening.interview_invitation', 'screening.rejected'].includes(event)) {
+      let candidateEmail = data.candidateEmail;
+      
+      if (candidateEmail) {
+          recipients.push(candidateEmail);
+          console.log(`📋 Added Candidate for screening notification: ${candidateEmail}`);
+      } else {
+          console.warn(`⚠️ No candidate email found for screening event: ${event}`);
+      }
   }
 
   // 3. Clean List
