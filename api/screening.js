@@ -7,6 +7,7 @@ const express = require('express');
 const router = express.Router();
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
+const { sendEmailNotification } = require('./email');
 
 const db = admin.firestore();
 const COLLECTION = 'screenings';
@@ -21,47 +22,6 @@ function generateToken(length = 32) {
         token += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return token;
-}
-
-// ============================================
-// HELPER: Send interview invitation email
-// ============================================
-async function sendInterviewInvitation({ to, candidateName, position, interviewDateTime, meetingLink, notes }) {
-    console.log('📧 Sending interview invitation to:', to);
-    console.log('   Candidate:', candidateName);
-    console.log('   Position:', position);
-    console.log('   Interview:', interviewDateTime);
-    console.log('   Meeting Link:', meetingLink);
-    
-    // TODO: Implement actual email sending via SendGrid/Nodemailer
-    // For now, just log the details
-    
-    // Example email content:
-    const emailContent = {
-        to: to,
-        subject: `Interview Invitation - ${position} at EDANBROOK`,
-        body: `
-Dear ${candidateName || 'Candidate'},
-
-Congratulations! We are pleased to inform you that you have been shortlisted for the ${position} position at EDANBROOK.
-
-Interview Details:
-- Date & Time: ${new Date(interviewDateTime).toLocaleString('en-IN', { dateStyle: 'full', timeStyle: 'short' })}
-${meetingLink ? `- Meeting Link: ${meetingLink}` : '- Location: To be confirmed'}
-
-${notes ? `Additional Information:\n${notes}\n` : ''}
-
-Please confirm your availability by replying to this email.
-
-Best regards,
-EDANBROOK HR Team
-        `
-    };
-    
-    console.log('📨 Email content prepared:', emailContent.subject);
-    
-    // Return true for now - implement actual sending later
-    return true;
 }
 
 // ============================================
@@ -154,6 +114,18 @@ router.post('/', verifyToken, async (req, res) => {
                 });
             }
             
+            // Get candidate data first
+            const candidateDoc = await db.collection('screening_candidates').doc(screeningId).get();
+            
+            if (!candidateDoc.exists) {
+                return res.status(404).json({
+                    success: false,
+                    error: 'Candidate not found'
+                });
+            }
+            
+            const candidate = candidateDoc.data();
+            
             const updateData = {
                 status: 'reviewed',
                 decision,
@@ -171,27 +143,37 @@ router.post('/', verifyToken, async (req, res) => {
             await db.collection('screening_candidates').doc(screeningId).update(updateData);
             
             // Send interview invitation email if requested
-            if (decision === 'Selected' && sendEmail) {
-                const candidateDoc = await db.collection('screening_candidates').doc(screeningId).get();
-                const candidate = candidateDoc.data();
-                
-                if (candidate?.candidateEmail) {
-                    await sendInterviewInvitation({
-                        to: candidate.candidateEmail,
-                        candidateName: candidate.candidateName,
-                        position: candidate.position,
-                        interviewDateTime,
-                        meetingLink,
-                        notes
-                    });
-                }
+            let emailSent = false;
+            if (decision === 'Selected' && sendEmail && candidate?.candidateEmail) {
+                console.log('📧 Attempting to send interview invitation via email service...');
+                const emailResult = await sendEmailNotification('screening.interview_invitation', {
+                    candidateEmail: candidate.candidateEmail,
+                    candidateName: candidate.candidateName,
+                    position: candidate.position,
+                    interviewDateTime: interviewDateTime,
+                    meetingLink: meetingLink,
+                    notes: notes,
+                    score: candidate.scores?.percentage
+                });
+                emailSent = emailResult?.success || false;
+            }
+            
+            // Send rejection email if rejected
+            if (decision === 'Rejected' && sendEmail && candidate?.candidateEmail) {
+                console.log('📧 Sending rejection notification...');
+                await sendEmailNotification('screening.rejected', {
+                    candidateEmail: candidate.candidateEmail,
+                    candidateName: candidate.candidateName,
+                    position: candidate.position
+                });
             }
             
             console.log(`✅ Candidate ${screeningId} marked as ${decision}`);
             
             return res.json({
                 success: true,
-                message: `Candidate marked as ${decision}` + (sendEmail && decision === 'Selected' ? ' and interview invitation sent' : '')
+                emailSent: emailSent,
+                message: `Candidate marked as ${decision}` + (sendEmail && decision === 'Selected' ? (emailSent ? ' and interview invitation sent!' : ' (email sending failed - check email config)') : '')
             });
         }
         
@@ -458,6 +440,21 @@ router.post('/submit', async (req, res) => {
         });
         
         console.log(`✅ Candidate submission: ${docRef.id} - ${candidateInfo?.name || 'Unknown'} for ${jobData.position}`);
+        
+        // Notify HR about new candidate submission
+        try {
+            await sendEmailNotification('screening.candidate_submitted', {
+                candidateName: candidateInfo?.name,
+                candidateEmail: candidateInfo?.email,
+                candidatePhone: candidateInfo?.phone,
+                position: jobData.position,
+                experience: candidateInfo?.experience,
+                expectedSalary: additionalInfo?.expectedSalary,
+                score: scores?.percentage
+            });
+        } catch (emailError) {
+            console.warn('⚠️ Failed to send HR notification:', emailError.message);
+        }
         
         return res.json({
             success: true,
