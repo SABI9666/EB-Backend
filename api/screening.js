@@ -24,16 +24,43 @@ function generateToken(length = 32) {
 }
 
 // ============================================
-// HELPER: Send email notification (placeholder)
+// HELPER: Send interview invitation email
 // ============================================
-async function sendScreeningEmail(to, candidateName, position, link, expiryDays) {
-    // TODO: Integrate with your email service (SendGrid, Nodemailer, etc.)
-    console.log(`📧 Sending screening email to: ${to}`);
-    console.log(`   Position: ${position}`);
-    console.log(`   Link: ${link}`);
-    console.log(`   Expires in: ${expiryDays} days`);
+async function sendInterviewInvitation({ to, candidateName, position, interviewDateTime, meetingLink, notes }) {
+    console.log('📧 Sending interview invitation to:', to);
+    console.log('   Candidate:', candidateName);
+    console.log('   Position:', position);
+    console.log('   Interview:', interviewDateTime);
+    console.log('   Meeting Link:', meetingLink);
     
-    // For now, just log - implement actual email sending later
+    // TODO: Implement actual email sending via SendGrid/Nodemailer
+    // For now, just log the details
+    
+    // Example email content:
+    const emailContent = {
+        to: to,
+        subject: `Interview Invitation - ${position} at EDANBROOK`,
+        body: `
+Dear ${candidateName || 'Candidate'},
+
+Congratulations! We are pleased to inform you that you have been shortlisted for the ${position} position at EDANBROOK.
+
+Interview Details:
+- Date & Time: ${new Date(interviewDateTime).toLocaleString('en-IN', { dateStyle: 'full', timeStyle: 'short' })}
+${meetingLink ? `- Meeting Link: ${meetingLink}` : '- Location: To be confirmed'}
+
+${notes ? `Additional Information:\n${notes}\n` : ''}
+
+Please confirm your availability by replying to this email.
+
+Best regards,
+EDANBROOK HR Team
+        `
+    };
+    
+    console.log('📨 Email content prepared:', emailContent.subject);
+    
+    // Return true for now - implement actual sending later
     return true;
 }
 
@@ -45,21 +72,22 @@ router.post('/', verifyToken, async (req, res) => {
     const path = req.query.path;
     
     try {
-        // CREATE - Generate new screening link
+        // CREATE - Generate new screening link for a position
         if (path === 'create') {
             const { 
-                candidateEmail, 
                 position, 
+                jobDescription,
+                experienceRequired,
                 token, 
-                expiryDays = 7, 
-                sendEmail = false,
-                createdBy 
+                expiryDays = 30, 
+                createdBy,
+                isReusable = true
             } = req.body;
             
-            if (!candidateEmail || !position) {
+            if (!position) {
                 return res.status(400).json({
                     success: false,
-                    error: 'candidateEmail and position are required'
+                    error: 'Position is required'
                 });
             }
             
@@ -70,43 +98,29 @@ router.post('/', verifyToken, async (req, res) => {
             const expiryDate = new Date();
             expiryDate.setDate(expiryDate.getDate() + parseInt(expiryDays));
             
-            // Create screening document
+            // Create screening job document
             const screeningData = {
-                candidateEmail: candidateEmail.toLowerCase().trim(),
-                candidateName: null, // Will be filled by candidate
-                candidatePhone: null,
                 position,
+                jobDescription: jobDescription || null,
+                experienceRequired: experienceRequired || null,
                 token: screeningToken,
-                status: 'pending',
-                scores: null,
+                isReusable: isReusable,
+                status: 'active',
+                candidateCount: 0,
                 createdBy: createdBy || req.user?.uid || 'system',
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                sentAt: admin.firestore.FieldValue.serverTimestamp(),
-                expiryDate: expiryDate,
-                submittedAt: null,
-                reviewedAt: null,
-                reviewedBy: null,
-                decision: null,
-                additionalInfo: null
+                expiryDate: expiryDate
             };
             
             const docRef = await db.collection(COLLECTION).add(screeningData);
             
-            // Send email if requested
-            if (sendEmail) {
-                const baseUrl = process.env.FRONTEND_URL || 'https://eb-tracker-frontend.vercel.app';
-                const screeningLink = `${baseUrl}/candidate-screening.html?token=${screeningToken}`;
-                await sendScreeningEmail(candidateEmail, null, position, screeningLink, expiryDays);
-            }
-            
-            console.log(`✅ Screening created: ${docRef.id} for ${candidateEmail}`);
+            console.log(`✅ Screening job created: ${docRef.id} for ${position}`);
             
             return res.json({
                 success: true,
                 data: {
                     id: docRef.id,
                     token: screeningToken,
-                    candidateEmail,
                     position,
                     expiryDate: expiryDate.toISOString()
                 },
@@ -114,9 +128,17 @@ router.post('/', verifyToken, async (req, res) => {
             });
         }
         
-        // REVIEW - Mark as selected/rejected
+        // REVIEW - Approve/Reject with interview details
         if (path === 'review') {
-            const { screeningId, decision, reviewedBy, notes } = req.body;
+            const { 
+                screeningId, 
+                decision, 
+                reviewedBy, 
+                notes,
+                interviewDateTime,
+                meetingLink,
+                sendEmail 
+            } = req.body;
             
             if (!screeningId || !decision) {
                 return res.status(400).json({
@@ -132,19 +154,44 @@ router.post('/', verifyToken, async (req, res) => {
                 });
             }
             
-            await db.collection(COLLECTION).doc(screeningId).update({
+            const updateData = {
                 status: 'reviewed',
                 decision,
                 reviewedBy: reviewedBy || req.user?.uid || 'system',
                 reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
                 reviewNotes: notes || null
-            });
+            };
             
-            console.log(`✅ Screening ${screeningId} marked as ${decision}`);
+            // Add interview details if approved
+            if (decision === 'Selected') {
+                updateData.interviewDateTime = interviewDateTime || null;
+                updateData.meetingLink = meetingLink || null;
+            }
+            
+            await db.collection('screening_candidates').doc(screeningId).update(updateData);
+            
+            // Send interview invitation email if requested
+            if (decision === 'Selected' && sendEmail) {
+                const candidateDoc = await db.collection('screening_candidates').doc(screeningId).get();
+                const candidate = candidateDoc.data();
+                
+                if (candidate?.candidateEmail) {
+                    await sendInterviewInvitation({
+                        to: candidate.candidateEmail,
+                        candidateName: candidate.candidateName,
+                        position: candidate.position,
+                        interviewDateTime,
+                        meetingLink,
+                        notes
+                    });
+                }
+            }
+            
+            console.log(`✅ Candidate ${screeningId} marked as ${decision}`);
             
             return res.json({
                 success: true,
-                message: `Candidate marked as ${decision}`
+                message: `Candidate marked as ${decision}` + (sendEmail && decision === 'Selected' ? ' and interview invitation sent' : '')
             });
         }
         
@@ -168,20 +215,9 @@ router.post('/', verifyToken, async (req, res) => {
                 });
             }
             
-            const data = doc.data();
-            const baseUrl = process.env.FRONTEND_URL || 'https://eb-tracker-frontend.vercel.app';
-            const screeningLink = `${baseUrl}/candidate-screening.html?token=${data.token}`;
-            
-            await sendScreeningEmail(data.candidateEmail, data.candidateName, data.position, screeningLink, 7);
-            
-            // Update last sent timestamp
-            await db.collection(COLLECTION).doc(screeningId).update({
-                lastResentAt: admin.firestore.FieldValue.serverTimestamp()
-            });
-            
             return res.json({
                 success: true,
-                message: `Email resent to ${data.candidateEmail}`
+                message: 'Email functionality to be implemented'
             });
         }
         
@@ -203,16 +239,16 @@ router.post('/', verifyToken, async (req, res) => {
 
 // ============================================
 // GET /api/screening?path=list
-// Get all screenings (HR/Director only)
+// Get all candidates (HR/Director only)
 // ============================================
 router.get('/', verifyToken, async (req, res) => {
     const path = req.query.path;
     
     try {
-        // LIST - Get all screenings
+        // LIST - Get all candidate submissions
         if (path === 'list') {
-            const snapshot = await db.collection(COLLECTION)
-                .orderBy('createdAt', 'desc')
+            const snapshot = await db.collection('screening_candidates')
+                .orderBy('submittedAt', 'desc')
                 .limit(100)
                 .get();
             
@@ -227,18 +263,18 @@ router.get('/', verifyToken, async (req, res) => {
                     position: data.position,
                     status: data.status,
                     scores: data.scores,
-                    token: data.token,
-                    sentAt: data.sentAt?.toDate?.()?.toISOString() || data.sentAt,
                     submittedAt: data.submittedAt?.toDate?.()?.toISOString() || data.submittedAt,
                     reviewedAt: data.reviewedAt?.toDate?.()?.toISOString() || data.reviewedAt,
                     decision: data.decision,
-                    experience: data.additionalInfo?.experience || data.experience,
-                    currentCompany: data.additionalInfo?.currentCompany || data.currentCompany,
-                    expectedSalary: data.additionalInfo?.expectedSalary || data.expectedSalary,
-                    strengths: data.additionalInfo?.strengths || data.strengths,
-                    improvements: data.additionalInfo?.improvements,
-                    achievements: data.additionalInfo?.achievements,
-                    motivation: data.additionalInfo?.motivation
+                    interviewDateTime: data.interviewDateTime,
+                    meetingLink: data.meetingLink,
+                    experience: data.experience,
+                    currentCompany: data.currentCompany,
+                    expectedSalary: data.expectedSalary,
+                    strengths: data.strengths,
+                    improvements: data.improvements,
+                    achievements: data.achievements,
+                    motivation: data.motivation
                 });
             });
             
@@ -249,64 +285,38 @@ router.get('/', verifyToken, async (req, res) => {
             });
         }
         
-        // VALIDATE - Check if token is valid (PUBLIC - no auth needed for this specific check)
-        if (path === 'validate') {
-            const token = req.query.token;
-            
-            if (!token) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Token required'
-                });
-            }
-            
+        // JOBS - Get all screening jobs/positions
+        if (path === 'jobs') {
             const snapshot = await db.collection(COLLECTION)
-                .where('token', '==', token)
-                .limit(1)
+                .orderBy('createdAt', 'desc')
+                .limit(50)
                 .get();
             
-            if (snapshot.empty) {
-                return res.json({
-                    success: false,
-                    valid: false,
-                    error: 'Invalid or expired token'
+            const jobs = [];
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                jobs.push({
+                    id: doc.id,
+                    position: data.position,
+                    jobDescription: data.jobDescription,
+                    experienceRequired: data.experienceRequired,
+                    token: data.token,
+                    status: data.status,
+                    candidateCount: data.candidateCount || 0,
+                    createdAt: data.createdAt?.toDate?.()?.toISOString() || data.createdAt,
+                    expiryDate: data.expiryDate?.toDate?.()?.toISOString() || data.expiryDate
                 });
-            }
-            
-            const doc = snapshot.docs[0];
-            const data = doc.data();
-            
-            // Check if already submitted
-            if (data.status !== 'pending') {
-                return res.json({
-                    success: false,
-                    valid: false,
-                    error: 'This assessment has already been submitted'
-                });
-            }
-            
-            // Check expiry
-            if (data.expiryDate && new Date(data.expiryDate.toDate()) < new Date()) {
-                return res.json({
-                    success: false,
-                    valid: false,
-                    error: 'This link has expired'
-                });
-            }
+            });
             
             return res.json({
                 success: true,
-                valid: true,
-                data: {
-                    position: data.position,
-                    candidateEmail: data.candidateEmail
-                }
+                data: jobs
             });
         }
         
-        // Default: Return all screenings if no path specified
-        const snapshot = await db.collection(COLLECTION)
-            .orderBy('createdAt', 'desc')
+        // Default: Return all candidates
+        const snapshot = await db.collection('screening_candidates')
+            .orderBy('submittedAt', 'desc')
             .limit(50)
             .get();
         
@@ -353,7 +363,7 @@ router.post('/submit', async (req, res) => {
             });
         }
         
-        // Find screening by token
+        // Find screening job by token
         const snapshot = await db.collection(COLLECTION)
             .where('token', '==', token)
             .limit(1)
@@ -366,58 +376,94 @@ router.post('/submit', async (req, res) => {
             });
         }
         
-        const doc = snapshot.docs[0];
-        const existingData = doc.data();
+        const jobDoc = snapshot.docs[0];
+        const jobData = jobDoc.data();
         
-        // Check if already submitted
-        if (existingData.status !== 'pending') {
+        // Check if job is still active
+        if (jobData.status !== 'active') {
             return res.status(400).json({
                 success: false,
-                error: 'This assessment has already been submitted'
+                error: 'This screening is no longer accepting submissions'
             });
         }
         
-        // Update with candidate's submission
-        const updateData = {
+        // Check expiry
+        if (jobData.expiryDate) {
+            const expiryDate = jobData.expiryDate.toDate ? jobData.expiryDate.toDate() : new Date(jobData.expiryDate);
+            if (expiryDate < new Date()) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'This screening link has expired'
+                });
+            }
+        }
+        
+        // Check if this candidate (by email) has already submitted
+        const existingSubmission = await db.collection('screening_candidates')
+            .where('jobId', '==', jobDoc.id)
+            .where('candidateEmail', '==', candidateInfo?.email?.toLowerCase())
+            .limit(1)
+            .get();
+        
+        if (!existingSubmission.empty) {
+            return res.status(400).json({
+                success: false,
+                error: 'You have already submitted an assessment for this position'
+            });
+        }
+        
+        // Create candidate submission document
+        const candidateData = {
+            jobId: jobDoc.id,
+            token: token,
+            position: jobData.position,
+            
+            // Candidate info
             candidateName: candidateInfo?.name || null,
+            candidateEmail: candidateInfo?.email?.toLowerCase() || null,
             candidatePhone: candidateInfo?.phone || null,
-            candidateEmail: candidateInfo?.email || existingData.candidateEmail,
             currentCompany: candidateInfo?.currentCompany || null,
             experience: candidateInfo?.experience || null,
             
-            // Store all assessment data
+            // Assessment data
             technicalSkills: technicalSkills || null,
             behavioralSkills: behavioralSkills || null,
             criticalThinking: criticalThinking || null,
             
-            // Additional info from candidate
-            additionalInfo: {
-                strengths: additionalInfo?.strengths || null,
-                improvements: additionalInfo?.improvements || null,
-                achievements: additionalInfo?.achievements || null,
-                motivation: additionalInfo?.motivation || null,
-                expectedSalary: additionalInfo?.expectedSalary || null,
-                availableFrom: additionalInfo?.availableFrom || null,
-                additionalComments: additionalInfo?.additionalComments || null
-            },
+            // Additional info
+            strengths: additionalInfo?.strengths || null,
+            improvements: additionalInfo?.improvements || null,
+            achievements: additionalInfo?.achievements || null,
+            motivation: additionalInfo?.motivation || null,
+            expectedSalary: additionalInfo?.expectedSalary || null,
+            availableFrom: additionalInfo?.availableFrom || null,
+            additionalComments: additionalInfo?.additionalComments || null,
             
-            // Calculated scores
+            // Scores
             scores: scores || null,
             
-            // Update status
+            // Status
             status: 'submitted',
-            submittedAt: admin.firestore.FieldValue.serverTimestamp()
+            submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+            reviewedAt: null,
+            reviewedBy: null,
+            decision: null
         };
         
-        await db.collection(COLLECTION).doc(doc.id).update(updateData);
+        const docRef = await db.collection('screening_candidates').add(candidateData);
         
-        console.log(`✅ Screening submitted: ${doc.id} by ${candidateInfo?.name || 'Unknown'}`);
+        // Increment candidate count on the job
+        await db.collection(COLLECTION).doc(jobDoc.id).update({
+            candidateCount: admin.firestore.FieldValue.increment(1)
+        });
+        
+        console.log(`✅ Candidate submission: ${docRef.id} - ${candidateInfo?.name || 'Unknown'} for ${jobData.position}`);
         
         return res.json({
             success: true,
             message: 'Assessment submitted successfully',
             data: {
-                id: doc.id,
+                id: docRef.id,
                 submittedAt: new Date().toISOString()
             }
         });
@@ -464,13 +510,13 @@ router.get('/validate', async (req, res) => {
         const doc = snapshot.docs[0];
         const data = doc.data();
         
-        // Check if already submitted
-        if (data.status !== 'pending') {
+        // Check if job is active
+        if (data.status !== 'active') {
             return res.json({
                 success: false,
                 valid: false,
-                error: 'This assessment has already been completed',
-                alreadySubmitted: true
+                error: 'This screening is no longer accepting submissions',
+                closed: true
             });
         }
         
@@ -492,7 +538,8 @@ router.get('/validate', async (req, res) => {
             valid: true,
             data: {
                 position: data.position,
-                candidateEmail: data.candidateEmail,
+                jobDescription: data.jobDescription,
+                experienceRequired: data.experienceRequired,
                 companyName: 'EDANBROOK'
             }
         });
@@ -508,45 +555,63 @@ router.get('/validate', async (req, res) => {
 });
 
 // ============================================
-// DELETE /api/screening?id=xxx
-// Delete a screening entry (HR/Director only)
+// DELETE /api/screening?id=xxx&type=job|candidate
+// Delete a screening job or candidate entry
 // ============================================
 router.delete('/', verifyToken, async (req, res) => {
     try {
-        const screeningId = req.query.id;
+        const id = req.query.id;
+        const type = req.query.type || 'candidate'; // Default to candidate
         
-        if (!screeningId) {
+        if (!id) {
             return res.status(400).json({
                 success: false,
-                error: 'Screening ID required'
+                error: 'ID required'
             });
         }
         
+        const collection = type === 'job' ? COLLECTION : 'screening_candidates';
+        
         // Check if document exists
-        const doc = await db.collection(COLLECTION).doc(screeningId).get();
+        const doc = await db.collection(collection).doc(id).get();
         
         if (!doc.exists) {
             return res.status(404).json({
                 success: false,
-                error: 'Screening not found'
+                error: `${type === 'job' ? 'Screening job' : 'Candidate'} not found`
             });
         }
         
-        // Delete the document
-        await db.collection(COLLECTION).doc(screeningId).delete();
-        
-        console.log(`✅ Screening deleted: ${screeningId}`);
+        // If deleting a job, also delete all associated candidates
+        if (type === 'job') {
+            const candidates = await db.collection('screening_candidates')
+                .where('jobId', '==', id)
+                .get();
+            
+            const batch = db.batch();
+            candidates.forEach(candidateDoc => {
+                batch.delete(candidateDoc.ref);
+            });
+            batch.delete(doc.ref);
+            await batch.commit();
+            
+            console.log(`✅ Screening job deleted: ${id} (with ${candidates.size} candidates)`);
+        } else {
+            // Delete single candidate
+            await db.collection(collection).doc(id).delete();
+            console.log(`✅ Candidate deleted: ${id}`);
+        }
         
         return res.json({
             success: true,
-            message: 'Screening deleted successfully'
+            message: `${type === 'job' ? 'Screening job' : 'Candidate'} deleted successfully`
         });
         
     } catch (error) {
         console.error('❌ Screening delete error:', error);
         return res.status(500).json({
             success: false,
-            error: 'Failed to delete screening',
+            error: 'Failed to delete',
             details: error.message
         });
     }
