@@ -10,6 +10,7 @@ const db = admin.firestore();
 // CONFIGURATION
 // ==========================================
 const FROM_EMAIL = 'EB-Tracker <sabin@edanbrook.com>'; 
+const HR_FROM_EMAIL = 'EDANBROOK HR <paul.a@edanbrook.com>'; // HR screening emails
 const DASHBOARD_URL = 'https://edanbrook-tracker.web.app';
 
 const EMAIL_RECIPIENT_MAP = {
@@ -857,7 +858,11 @@ async function sendEmailNotification(event, data) {
     const html = typeof tmpl.html === 'function' ? tmpl.html(data) : interpolate(tmpl.html, data);
     const subject = interpolate(tmpl.subject, data);
 
-    console.log(`🚀 Sending from [${FROM_EMAIL}] to [${recipients.length}] recipients (individually for privacy)...`);
+    // Use HR email for screening events
+    const isHREvent = event.startsWith('screening.');
+    const fromEmail = isHREvent ? HR_FROM_EMAIL : FROM_EMAIL;
+
+    console.log(`🚀 Sending from [${fromEmail}] to [${recipients.length}] recipients (individually for privacy)...`);
     console.log(`📧 Recipients: ${recipients.join(', ')}`);
     
     // 5. Send via Resend - INDIVIDUAL EMAILS FOR PRIVACY
@@ -869,7 +874,7 @@ async function sendEmailNotification(event, data) {
     for (const recipient of recipients) {
         try {
             const result = await resend.emails.send({
-                from: FROM_EMAIL,
+                from: fromEmail,
                 to: [recipient],  // Single recipient - they only see their own email
                 subject: subject,
                 html: html
