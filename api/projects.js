@@ -1,4 +1,7 @@
-// api/projects.js - CONSOLIDATED with variation code generator + EMAIL NOTIFICATIONS + ALLOCATION EDITING
+
+Copy
+
+// api/projects.js - CONSOLIDATED with variation code generator + EMAIL NOTIFICATIONS + ALLOCATION EDITING + DESIGN FILE WORKFLOW
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
@@ -54,13 +57,50 @@ const handler = async (req, res) => {
         }
 
         // ============================================
-        // GET - Retrieve projects OR generate variation code
+        // GET - Retrieve projects OR generate variation code OR get design files
         // ============================================
         if (req.method === 'GET') {
             const { id, action, parentId, status } = req.query;
 
             // ================================================
-            // NEW: Generate Variation Code Logic
+            // NEW: Get Design Files
+            // ================================================
+            if (action === 'get_design_files') {
+                const projectIdFilter = req.query.projectId;
+                const statusFilter = req.query.status;
+                
+                let query = db.collection('designFiles');
+                
+                if (projectIdFilter) {
+                    query = query.where('projectId', '==', projectIdFilter);
+                }
+                
+                // For designers, only show their own files
+                if (req.user.role === 'designer') {
+                    query = query.where('uploadedByUid', '==', req.user.uid);
+                }
+                
+                // For COO - show files pending approval
+                if (statusFilter) {
+                    query = query.where('status', '==', statusFilter);
+                }
+                
+                query = query.orderBy('createdAt', 'desc');
+                
+                const snapshot = await query.get();
+                const designFiles = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                
+                return res.status(200).json({ 
+                    success: true, 
+                    data: designFiles 
+                });
+            }
+
+            // ================================================
+            // Generate Variation Code Logic
             // ================================================
             if (action === 'generate-variation-code') {
                 if (!parentId) {
@@ -955,7 +995,481 @@ const handler = async (req, res) => {
             // ============================================
 
             // ============================================
-            // END: COO Assigning Multiple Designers
+            // DESIGN FILE WORKFLOW - Upload Design File
+            // ============================================
+            else if (action === 'upload_design_file') {
+                // Only Designer or Design Lead can upload
+                if (!['designer', 'design_lead'].includes(req.user.role)) {
+                    return res.status(403).json({ 
+                        success: false, 
+                        error: 'Only Designers can upload design files' 
+                    });
+                }
+
+                const { 
+                    fileName, 
+                    fileUrl, 
+                    fileSize, 
+                    clientEmail, 
+                    clientName,
+                    notes 
+                } = data;
+
+                // Validation
+                if (!fileName || !fileUrl) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'File name and URL are required' 
+                    });
+                }
+
+                if (!clientEmail || !clientEmail.includes('@')) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'Valid client email is required' 
+                    });
+                }
+
+                // Create design file record
+                const designFileData = {
+                    projectId: id,
+                    projectName: project.projectName,
+                    projectCode: project.projectCode || 'N/A',
+                    clientCompany: project.clientCompany || 'N/A',
+                    
+                    // File Info
+                    fileName: fileName,
+                    fileUrl: fileUrl,
+                    fileSize: fileSize || 0,
+                    
+                    // Client Info
+                    clientEmail: clientEmail.toLowerCase().trim(),
+                    clientName: clientName || '',
+                    
+                    // Designer Info
+                    uploadedByUid: req.user.uid,
+                    uploadedByName: req.user.name,
+                    uploadedByEmail: req.user.email,
+                    
+                    // Status
+                    status: 'uploaded', // Not yet submitted for approval
+                    
+                    // Notes
+                    designerNotes: notes || '',
+                    
+                    // Timestamps
+                    uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                };
+
+                const designFileRef = await db.collection('designFiles').add(designFileData);
+
+                // Log activity
+                await db.collection('activities').add({
+                    type: 'design_file_uploaded',
+                    details: `Design file uploaded for project: ${project.projectName} by ${req.user.name}`,
+                    performedByName: req.user.name,
+                    performedByRole: req.user.role,
+                    performedByUid: req.user.uid,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    projectId: id,
+                    designFileId: designFileRef.id,
+                    fileName: fileName
+                });
+
+                return res.status(200).json({ 
+                    success: true, 
+                    message: 'Design file uploaded successfully',
+                    designFileId: designFileRef.id
+                });
+            }
+
+            // ============================================
+            // DESIGN FILE WORKFLOW - Submit for Approval
+            // ============================================
+            else if (action === 'submit_design_for_approval') {
+                // Only Designer or Design Lead can submit
+                if (!['designer', 'design_lead'].includes(req.user.role)) {
+                    return res.status(403).json({ 
+                        success: false, 
+                        error: 'Only Designers can submit design files for approval' 
+                    });
+                }
+
+                const { designFileId } = data;
+
+                if (!designFileId) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'Design file ID is required' 
+                    });
+                }
+
+                // Get the design file
+                const designFileRef = db.collection('designFiles').doc(designFileId);
+                const designFileDoc = await designFileRef.get();
+
+                if (!designFileDoc.exists) {
+                    return res.status(404).json({ 
+                        success: false, 
+                        error: 'Design file not found' 
+                    });
+                }
+
+                const designFile = designFileDoc.data();
+
+                // Check if already submitted
+                if (designFile.status !== 'uploaded') {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: `Design file already ${designFile.status}` 
+                    });
+                }
+
+                // Update status to pending approval
+                await designFileRef.update({
+                    status: 'pending_approval',
+                    submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    submittedByUid: req.user.uid,
+                    submittedByName: req.user.name,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                // Create notification for COO/Director
+                await db.collection('notifications').add({
+                    type: 'design_file_approval_pending',
+                    recipientRole: 'coo',
+                    message: `Design file pending approval for "${project.projectName}" - Submitted by ${req.user.name}`,
+                    projectId: id,
+                    designFileId: designFileId,
+                    fileName: designFile.fileName,
+                    clientEmail: designFile.clientEmail,
+                    submittedBy: req.user.name,
+                    priority: 'high',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    isRead: false
+                });
+
+                // Send email notification to COO
+                try {
+                    await sendEmailNotification('design.submitted_for_approval', {
+                        projectName: project.projectName,
+                        projectCode: project.projectCode || 'N/A',
+                        clientCompany: project.clientCompany || 'N/A',
+                        fileName: designFile.fileName,
+                        submittedBy: req.user.name,
+                        clientEmail: designFile.clientEmail,
+                        projectId: id,
+                        designFileId: designFileId
+                    });
+                } catch (emailError) {
+                    console.error('Email notification failed:', emailError);
+                }
+
+                // Log activity
+                await db.collection('activities').add({
+                    type: 'design_file_submitted',
+                    details: `Design file submitted for approval: ${designFile.fileName} for project ${project.projectName}`,
+                    performedByName: req.user.name,
+                    performedByRole: req.user.role,
+                    performedByUid: req.user.uid,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    projectId: id,
+                    designFileId: designFileId
+                });
+
+                return res.status(200).json({ 
+                    success: true, 
+                    message: 'Design file submitted for approval' 
+                });
+            }
+
+            // ============================================
+            // DESIGN FILE WORKFLOW - Approve/Reject
+            // ============================================
+            else if (action === 'approve_design_file' || action === 'reject_design_file') {
+                // Only COO or Director can approve/reject
+                if (!['coo', 'director'].includes(req.user.role)) {
+                    return res.status(403).json({ 
+                        success: false, 
+                        error: 'Only COO or Director can approve/reject design files' 
+                    });
+                }
+
+                const { designFileId, notes, rejectionReason } = data;
+
+                if (!designFileId) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'Design file ID is required' 
+                    });
+                }
+
+                // Get the design file
+                const designFileRef = db.collection('designFiles').doc(designFileId);
+                const designFileDoc = await designFileRef.get();
+
+                if (!designFileDoc.exists) {
+                    return res.status(404).json({ 
+                        success: false, 
+                        error: 'Design file not found' 
+                    });
+                }
+
+                const designFile = designFileDoc.data();
+
+                if (designFile.status !== 'pending_approval') {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'Design file is not pending approval' 
+                    });
+                }
+
+                if (action === 'approve_design_file') {
+                    // Approve the design file
+                    await designFileRef.update({
+                        status: 'approved',
+                        approvedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        approvedByUid: req.user.uid,
+                        approvedByName: req.user.name,
+                        approvalNotes: notes || '',
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+
+                    // Notify the designer
+                    await db.collection('notifications').add({
+                        type: 'design_file_approved',
+                        recipientUid: designFile.uploadedByUid,
+                        message: `Your design file "${designFile.fileName}" has been approved! You can now send it to the client.`,
+                        projectId: id,
+                        designFileId: designFileId,
+                        approvedBy: req.user.name,
+                        priority: 'high',
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false
+                    });
+
+                    // Send email to designer
+                    try {
+                        await sendEmailNotification('design.approved', {
+                            projectName: project.projectName,
+                            fileName: designFile.fileName,
+                            approvedBy: req.user.name,
+                            approvalNotes: notes || 'No additional notes',
+                            designerEmail: designFile.uploadedByEmail,
+                            projectId: id,
+                            designFileId: designFileId
+                        });
+                    } catch (emailError) {
+                        console.error('Email notification failed:', emailError);
+                    }
+
+                    // Log activity
+                    await db.collection('activities').add({
+                        type: 'design_file_approved',
+                        details: `Design file approved: ${designFile.fileName} by ${req.user.name}`,
+                        performedByName: req.user.name,
+                        performedByRole: req.user.role,
+                        performedByUid: req.user.uid,
+                        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        projectId: id,
+                        designFileId: designFileId
+                    });
+                    
+                    return res.status(200).json({ 
+                        success: true, 
+                        message: 'Design file approved successfully' 
+                    });
+
+                } else {
+                    // Reject the design file
+                    if (!rejectionReason) {
+                        return res.status(400).json({ 
+                            success: false, 
+                            error: 'Rejection reason is required' 
+                        });
+                    }
+
+                    await designFileRef.update({
+                        status: 'rejected',
+                        rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        rejectedByUid: req.user.uid,
+                        rejectedByName: req.user.name,
+                        rejectionReason: rejectionReason,
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+
+                    // Notify the designer
+                    await db.collection('notifications').add({
+                        type: 'design_file_rejected',
+                        recipientUid: designFile.uploadedByUid,
+                        message: `Your design file "${designFile.fileName}" was not approved. Reason: ${rejectionReason}`,
+                        projectId: id,
+                        designFileId: designFileId,
+                        rejectedBy: req.user.name,
+                        rejectionReason: rejectionReason,
+                        priority: 'high',
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false
+                    });
+
+                    // Send email to designer
+                    try {
+                        await sendEmailNotification('design.rejected', {
+                            projectName: project.projectName,
+                            fileName: designFile.fileName,
+                            rejectedBy: req.user.name,
+                            rejectionReason: rejectionReason,
+                            designerEmail: designFile.uploadedByEmail,
+                            projectId: id
+                        });
+                    } catch (emailError) {
+                        console.error('Email notification failed:', emailError);
+                    }
+
+                    // Log activity
+                    await db.collection('activities').add({
+                        type: 'design_file_rejected',
+                        details: `Design file rejected: ${designFile.fileName} by ${req.user.name}. Reason: ${rejectionReason}`,
+                        performedByName: req.user.name,
+                        performedByRole: req.user.role,
+                        performedByUid: req.user.uid,
+                        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        projectId: id,
+                        designFileId: designFileId
+                    });
+
+                    return res.status(200).json({ 
+                        success: true, 
+                        message: 'Design file rejected' 
+                    });
+                }
+            }
+
+            // ============================================
+            // DESIGN FILE WORKFLOW - Send to Client
+            // ============================================
+            else if (action === 'send_design_to_client') {
+                // Only Designer or Design Lead who uploaded can send
+                if (!['designer', 'design_lead', 'coo', 'director'].includes(req.user.role)) {
+                    return res.status(403).json({ 
+                        success: false, 
+                        error: 'Unauthorized to send design files' 
+                    });
+                }
+
+                const { designFileId, customMessage } = data;
+
+                if (!designFileId) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'Design file ID is required' 
+                    });
+                }
+
+                // Get the design file
+                const designFileRef = db.collection('designFiles').doc(designFileId);
+                const designFileDoc = await designFileRef.get();
+
+                if (!designFileDoc.exists) {
+                    return res.status(404).json({ 
+                        success: false, 
+                        error: 'Design file not found' 
+                    });
+                }
+
+                const designFile = designFileDoc.data();
+
+                // Check if approved
+                if (designFile.status !== 'approved') {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'Design file must be approved before sending to client' 
+                    });
+                }
+
+                // Send professional email to client
+                try {
+                    const emailResult = await sendEmailNotification('design.sent_to_client', {
+                        // Project Info
+                        projectName: project.projectName,
+                        projectCode: project.projectCode || '',
+                        clientCompany: project.clientCompany || 'Valued Client',
+                        
+                        // Client Info
+                        clientEmail: designFile.clientEmail,
+                        clientName: designFile.clientName || '',
+                        
+                        // File Info
+                        fileName: designFile.fileName,
+                        fileUrl: designFile.fileUrl,
+                        
+                        // Custom Message
+                        customMessage: customMessage || '',
+                        
+                        // Sender Info
+                        senderName: req.user.name,
+                        senderEmail: req.user.email
+                    });
+
+                    if (!emailResult.success) {
+                        throw new Error(emailResult.error || 'Email sending failed');
+                    }
+
+                    // Update status to sent
+                    await designFileRef.update({
+                        status: 'sent',
+                        sentAt: admin.firestore.FieldValue.serverTimestamp(),
+                        sentByUid: req.user.uid,
+                        sentByName: req.user.name,
+                        sentCustomMessage: customMessage || '',
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+
+                    // Notify COO about successful delivery
+                    await db.collection('notifications').add({
+                        type: 'design_file_sent',
+                        recipientRole: 'coo',
+                        message: `Design file "${designFile.fileName}" sent to client: ${designFile.clientEmail}`,
+                        projectId: id,
+                        designFileId: designFileId,
+                        sentBy: req.user.name,
+                        clientEmail: designFile.clientEmail,
+                        priority: 'normal',
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false
+                    });
+
+                    // Log activity
+                    await db.collection('activities').add({
+                        type: 'design_file_sent_to_client',
+                        details: `Design file "${designFile.fileName}" sent to ${designFile.clientEmail} for project ${project.projectName}`,
+                        performedByName: req.user.name,
+                        performedByRole: req.user.role,
+                        performedByUid: req.user.uid,
+                        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                        projectId: id,
+                        designFileId: designFileId,
+                        clientEmail: designFile.clientEmail
+                    });
+
+                    return res.status(200).json({ 
+                        success: true, 
+                        message: `Design file sent successfully to ${designFile.clientEmail}` 
+                    });
+
+                } catch (emailError) {
+                    console.error('Failed to send design to client:', emailError);
+                    return res.status(500).json({ 
+                        success: false, 
+                        error: 'Failed to send email: ' + emailError.message 
+                    });
+                }
+            }
+
+            // ============================================
+            // END: Design File Workflow
             // ============================================
             
             else {
