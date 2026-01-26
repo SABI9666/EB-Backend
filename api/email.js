@@ -753,9 +753,15 @@ const EMAIL_TEMPLATE_MAP = {
                 <a href="${data.fileUrl}" 
                    target="_blank" 
                    style="display: inline-block; background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%); color: #ffffff; text-decoration: none; padding: 18px 45px; border-radius: 10px; font-size: 16px; font-weight: 700; letter-spacing: 0.5px; box-shadow: 0 4px 15px rgba(30, 58, 95, 0.3);">
-                  📥 Download Design Files
+                  ${data.isExternalLink ? '🔗 Access Design Files' : '📥 Download Design Files'}
                 </a>
               </div>
+              
+              ${data.isExternalLink ? `
+              <p style="margin: 0 0 20px 0; color: #64748b; font-size: 13px; text-align: center; line-height: 1.6;">
+                <em>Note: This link will open in a new browser tab where you can view or download the files.</em>
+              </p>
+              ` : ''}
               
               <p style="margin: 30px 0 0 0; color: #64748b; font-size: 13px; text-align: center; line-height: 1.6;">
                 If the download button doesn't work, please copy and paste this link into your browser:<br>
