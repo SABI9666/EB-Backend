@@ -1,6 +1,3 @@
-
-Copy
-
 // api/projects.js - CONSOLIDATED with variation code generator + EMAIL NOTIFICATIONS + ALLOCATION EDITING + DESIGN FILE WORKFLOW
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
@@ -69,34 +66,59 @@ const handler = async (req, res) => {
                 const projectIdFilter = req.query.projectId;
                 const statusFilter = req.query.status;
                 
-                let query = db.collection('designFiles');
-                
-                if (projectIdFilter) {
-                    query = query.where('projectId', '==', projectIdFilter);
+                try {
+                    let query = db.collection('designFiles');
+                    
+                    if (projectIdFilter) {
+                        query = query.where('projectId', '==', projectIdFilter);
+                    }
+                    
+                    // For designers, only show their own files
+                    if (req.user.role === 'designer') {
+                        query = query.where('uploadedByUid', '==', req.user.uid);
+                    }
+                    
+                    // For COO - show files pending approval
+                    if (statusFilter) {
+                        query = query.where('status', '==', statusFilter);
+                    }
+                    
+                    // Try with orderBy first
+                    let snapshot;
+                    try {
+                        snapshot = await query.orderBy('createdAt', 'desc').get();
+                    } catch (indexError) {
+                        // If index doesn't exist, fetch without ordering
+                        console.warn('⚠️ Firestore index missing, fetching without order:', indexError.message);
+                        snapshot = await query.get();
+                    }
+                    
+                    const designFiles = snapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+                    
+                    // Sort manually if we couldn't use orderBy
+                    designFiles.sort((a, b) => {
+                        const dateA = a.createdAt?.seconds || a.createdAt || 0;
+                        const dateB = b.createdAt?.seconds || b.createdAt || 0;
+                        return dateB - dateA;
+                    });
+                    
+                    console.log(`📐 Found ${designFiles.length} design files for user ${req.user.email}`);
+                    
+                    return res.status(200).json({ 
+                        success: true, 
+                        data: designFiles 
+                    });
+                } catch (error) {
+                    console.error('❌ Error fetching design files:', error);
+                    return res.status(500).json({
+                        success: false,
+                        error: error.message,
+                        hint: 'You may need to create a Firestore composite index'
+                    });
                 }
-                
-                // For designers, only show their own files
-                if (req.user.role === 'designer') {
-                    query = query.where('uploadedByUid', '==', req.user.uid);
-                }
-                
-                // For COO - show files pending approval
-                if (statusFilter) {
-                    query = query.where('status', '==', statusFilter);
-                }
-                
-                query = query.orderBy('createdAt', 'desc');
-                
-                const snapshot = await query.get();
-                const designFiles = snapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data()
-                }));
-                
-                return res.status(200).json({ 
-                    success: true, 
-                    data: designFiles 
-                });
             }
 
             // ================================================
@@ -1012,7 +1034,9 @@ const handler = async (req, res) => {
                     fileSize, 
                     clientEmail, 
                     clientName,
-                    notes 
+                    notes,
+                    uploadType,
+                    isExternalLink 
                 } = data;
 
                 // Validation
@@ -1041,6 +1065,8 @@ const handler = async (req, res) => {
                     fileName: fileName,
                     fileUrl: fileUrl,
                     fileSize: fileSize || 0,
+                    uploadType: uploadType || 'file', // 'file' or 'link'
+                    isExternalLink: isExternalLink || false,
                     
                     // Client Info
                     clientEmail: clientEmail.toLowerCase().trim(),
@@ -1066,21 +1092,23 @@ const handler = async (req, res) => {
                 const designFileRef = await db.collection('designFiles').add(designFileData);
 
                 // Log activity
+                const uploadTypeLabel = isExternalLink ? 'link' : 'file';
                 await db.collection('activities').add({
                     type: 'design_file_uploaded',
-                    details: `Design file uploaded for project: ${project.projectName} by ${req.user.name}`,
+                    details: `Design ${uploadTypeLabel} uploaded for project: ${project.projectName} by ${req.user.name}`,
                     performedByName: req.user.name,
                     performedByRole: req.user.role,
                     performedByUid: req.user.uid,
                     timestamp: admin.firestore.FieldValue.serverTimestamp(),
                     projectId: id,
                     designFileId: designFileRef.id,
-                    fileName: fileName
+                    fileName: fileName,
+                    isExternalLink: isExternalLink || false
                 });
 
                 return res.status(200).json({ 
                     success: true, 
-                    message: 'Design file uploaded successfully',
+                    message: `Design ${uploadTypeLabel} uploaded successfully`,
                     designFileId: designFileRef.id
                 });
             }
@@ -1404,6 +1432,8 @@ const handler = async (req, res) => {
                         // File Info
                         fileName: designFile.fileName,
                         fileUrl: designFile.fileUrl,
+                        isExternalLink: designFile.isExternalLink || designFile.uploadType === 'link',
+                        uploadType: designFile.uploadType || 'file',
                         
                         // Custom Message
                         customMessage: customMessage || '',
