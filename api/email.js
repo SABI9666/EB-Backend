@@ -1,4 +1,4 @@
-// api/email.js - Enhanced Email Notification API with Timesheet & Invoice Notifications
+// api/email.js - Enhanced Email Notification API with Timesheet & Invoice Notifications + Design File Workflow
 const express = require('express');
 const { Resend } = require('resend');
 const admin = require('./_firebase-admin');
@@ -11,6 +11,7 @@ const db = admin.firestore();
 // ==========================================
 const FROM_EMAIL = 'EB-Tracker <sabin@edanbrook.com>'; 
 const HR_FROM_EMAIL = 'EDANBROOK HR <paul.a@edanbrook.com>'; // HR screening emails
+const DESIGN_FROM_EMAIL = 'EDANBROOK Design <design@edanbrook.com>'; // Design file emails
 const DASHBOARD_URL = 'https://edanbrook-tracker.web.app';
 
 const EMAIL_RECIPIENT_MAP = {
@@ -47,7 +48,13 @@ const EMAIL_RECIPIENT_MAP = {
   // HR Screening / Interview notification types
   'screening.interview_invitation': [], // Dynamic only - sent directly to candidate email
   'screening.candidate_submitted': ['hr', 'coo'], // Candidate submitted assessment → HR, COO notified
-  'screening.rejected': [] // Dynamic only - sent to candidate
+  'screening.rejected': [], // Dynamic only - sent to candidate
+  
+  // Design File Workflow notification types
+  'design.submitted_for_approval': ['coo', 'director'], // Designer submits → COO/Director
+  'design.approved': [],                                // Dynamic - designer email
+  'design.rejected': [],                                // Dynamic - designer email
+  'design.sent_to_client': []                           // Dynamic - client email
 };
 
 // ==========================================
@@ -354,17 +361,6 @@ const EMAIL_TEMPLATE_MAP = {
         { label: 'Contact Person', value: data.contactPerson || 'N/A' }
       ])}
       ${getStatusBanner(`Payment is due in ${data.daysUntilDue || 0} days. Please follow up with the client if necessary.`, 'warning')}
-      
-      <div style="margin: 25px 0; padding: 20px; background-color: #f0f9ff; border-radius: 6px;">
-        <h3 style="margin: 0 0 10px 0; color: #0369a1; font-size: 16px;">Recommended Actions:</h3>
-        <ul style="margin: 10px 0; padding-left: 20px; color: #0c4a6e; font-size: 14px;">
-          <li style="margin: 5px 0;">Send a courtesy reminder to the client</li>
-          <li style="margin: 5px 0;">Verify the invoice was received</li>
-          <li style="margin: 5px 0;">Check if there are any issues with the invoice</li>
-          <li style="margin: 5px 0;">Update the payment status in the system</li>
-        </ul>
-      </div>
-      
       ${getButton('View Invoice Details', `${DASHBOARD_URL}/invoices/${data.invoiceId}`)}
     `, 'Payment reminder - please take necessary action.')
   },
@@ -382,32 +378,16 @@ const EMAIL_TEMPLATE_MAP = {
         { label: 'Project', value: data.projectName || 'N/A' },
         { label: 'Invoice Amount', value: formatCurrency(data.invoiceAmount) },
         { label: 'Original Due Date', value: formatDate(data.dueDate) },
-        { label: 'Days Overdue', value: `${data.daysOverdue || 0} days` },
-        { label: 'Contact Person', value: data.contactPerson || 'N/A' },
-        { label: 'Contact Email', value: data.contactEmail || 'N/A' },
-        { label: 'Contact Phone', value: data.contactPhone || 'N/A' }
+        { label: 'Days Overdue', value: `${data.daysOverdue || 0} days` }
       ])}
-      
-      <div style="margin: 25px 0; padding: 20px; background-color: #fef2f2; border-radius: 6px; border: 1px solid #fecaca;">
-        <h3 style="margin: 0 0 10px 0; color: #991b1b; font-size: 16px;">⚠️ Escalation Required:</h3>
-        <ul style="margin: 10px 0; padding-left: 20px; color: #7f1d1d; font-size: 14px;">
-          <li style="margin: 5px 0;">Contact client immediately via phone</li>
-          <li style="margin: 5px 0;">Send formal overdue notice</li>
-          <li style="margin: 5px 0;">Consider suspending ongoing work if necessary</li>
-          <li style="margin: 5px 0;">Escalate to senior management</li>
-          <li style="margin: 5px 0;">Review payment terms for future projects</li>
-        </ul>
-      </div>
-      
       <p style="margin: 20px 0; color: #dc2626; font-size: 15px; font-weight: 600;">
         This requires immediate attention to maintain cash flow and client relationships.
       </p>
-      
       ${getButton('View Invoice & Take Action', `${DASHBOARD_URL}/invoices/${data.invoiceId}`, '#dc2626')}
     `, 'URGENT: Overdue payment requires immediate action.')
   },
 
-  // Keep existing templates
+  // =============== PROPOSAL/PROJECT TEMPLATES ===============
   'proposal.created': {
     subject: '📄 New Proposal Created: {{projectName}}',
     html: (data) => getEmailWrapper(`
@@ -459,7 +439,7 @@ const EMAIL_TEMPLATE_MAP = {
         { label: 'Approved By', value: 'Director' }
       ])}
       <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        The project is now ready to move to the next phase. Please proceed with the necessary arrangements.
+        The project is now ready to move to the next phase.
       </p>
       ${getButton('View Project', DASHBOARD_URL)}
     `)
@@ -480,8 +460,7 @@ const EMAIL_TEMPLATE_MAP = {
         { label: 'Department', value: data.department || 'N/A' },
         { label: 'Leave Period', value: `${formatDate(data.fromDate)} to ${formatDate(data.toDate)}` },
         { label: 'Total Days', value: `${data.totalDays || 1} day(s)` },
-        { label: 'Reason', value: data.reason || 'No reason provided' },
-        { label: 'Emergency Contact', value: data.emergencyContact || 'Not provided' }
+        { label: 'Reason', value: data.reason || 'No reason provided' }
       ])}
       ${getStatusBanner('This leave request is pending approval.', 'warning')}
       ${getButton('Review Leave Requests', DASHBOARD_URL)}
@@ -498,12 +477,8 @@ const EMAIL_TEMPLATE_MAP = {
       ${getInfoBox([
         { label: 'Leave Period', value: `${formatDate(data.fromDate)} to ${formatDate(data.toDate)}` },
         { label: 'Total Days', value: `${data.totalDays || 1} day(s)` },
-        { label: 'Leave Type', value: data.leaveType || 'As assigned by HR' },
         { label: 'Approved By', value: data.approvedBy || 'Management' }
       ])}
-      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        Please ensure proper handover of your responsibilities before your leave begins.
-      </p>
       ${getButton('View Leave Status', DASHBOARD_URL)}
     `, 'Enjoy your time off!')
   },
@@ -517,13 +492,9 @@ const EMAIL_TEMPLATE_MAP = {
       ${getStatusBanner('Unfortunately, your leave request could not be approved at this time.', 'error')}
       ${getInfoBox([
         { label: 'Leave Period', value: `${formatDate(data.fromDate)} to ${formatDate(data.toDate)}` },
-        { label: 'Total Days', value: `${data.totalDays || 1} day(s)` },
         { label: 'Reviewed By', value: data.rejectedBy || 'Management' },
         { label: 'Reason', value: data.rejectionReason || 'No reason provided' }
       ])}
-      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        If you have questions, please contact HR or your supervisor for more details.
-      </p>
       ${getButton('View Leave Status', DASHBOARD_URL)}
     `, 'Please contact HR if you have questions.')
   },
@@ -534,89 +505,43 @@ const EMAIL_TEMPLATE_MAP = {
       <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
         📋 Leave Request Stage Approved
       </h2>
-      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        A leave request has passed Stage ${data.stage || '1'} approval and requires HR processing:
-      </p>
       ${getInfoBox([
         { label: 'Employee', value: data.employeeName || 'N/A' },
-        { label: 'Department', value: data.department || 'N/A' },
         { label: 'Leave Period', value: `${formatDate(data.fromDate)} to ${formatDate(data.toDate)}` },
         { label: 'Total Days', value: `${data.totalDays || 1} day(s)` },
-        { label: 'Approved By', value: data.approvedBy || 'N/A' },
-        { label: 'Current Stage', value: `Stage ${data.currentStage || '1'} of ${data.totalStages || '3'}` }
+        { label: 'Approved By', value: data.approvedBy || 'N/A' }
       ])}
       ${getStatusBanner('Please assign leave type and complete final processing.', 'info')}
       ${getButton('Process Leave Request', DASHBOARD_URL)}
     `, 'HR action required for final approval.')
   },
 
-  // =============== HR SCREENING / INTERVIEW TEMPLATES ===============
+  // =============== HR SCREENING TEMPLATES ===============
   'screening.interview_invitation': {
     subject: '🎉 Interview Invitation - {{position}} at EDANBROOK',
     html: (data) => {
       const formattedDate = data.interviewDateTime ? 
         new Date(data.interviewDateTime).toLocaleString('en-IN', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true
+          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+          hour: '2-digit', minute: '2-digit', hour12: true
         }) : 'To be confirmed';
       
       return getEmailWrapper(`
         <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
           🎉 Interview Invitation
         </h2>
-        
         ${getStatusBanner(`Congratulations! You have been shortlisted for the <strong>${data.position || 'N/A'}</strong> position at EDANBROOK.`, 'success')}
-        
         <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
           Dear <strong>${data.candidateName || 'Candidate'}</strong>,
         </p>
-        
-        <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-          We are pleased to inform you that based on your assessment, you have been selected for an interview. Please find the details below:
-        </p>
-        
         ${getInfoBox([
           { label: 'Position', value: data.position || 'N/A' },
           { label: 'Date & Time', value: formattedDate },
-          { label: 'Interview Mode', value: data.meetingLink ? 'Online (Video Call)' : 'To be confirmed' },
-          { label: 'Assessment Score', value: data.score ? `${data.score}%` : 'N/A' }
+          { label: 'Interview Mode', value: data.meetingLink ? 'Online (Video Call)' : 'To be confirmed' }
         ])}
-        
-        ${data.meetingLink ? `
-          <div style="text-align: center; margin: 30px 0;">
-            <p style="margin: 0 0 15px 0; color: #475569; font-size: 15px;">
-              Click the button below to join the interview:
-            </p>
-            ${getButton('🎥 Join Interview Meeting', data.meetingLink, '#10b981')}
-            <p style="margin: 15px 0 0 0; color: #94a3b8; font-size: 13px; word-break: break-all;">
-              Meeting Link: ${data.meetingLink}
-            </p>
-          </div>
-        ` : ''}
-        
-        ${data.notes ? `
-          <div style="background-color: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px 20px; margin: 20px 0; border-radius: 4px;">
-            <p style="margin: 0 0 8px 0; color: #92400e; font-size: 14px; font-weight: 600;">📝 Additional Information:</p>
-            <p style="margin: 0; color: #92400e; font-size: 14px; line-height: 1.5; white-space: pre-wrap;">${data.notes}</p>
-          </div>
-        ` : ''}
-        
-        <p style="margin: 25px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-          Please confirm your availability by replying to this email at your earliest convenience.
-        </p>
-        
-        <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-          We look forward to speaking with you!
-        </p>
-        
+        ${data.meetingLink ? getButton('🎥 Join Interview Meeting', data.meetingLink, '#10b981') : ''}
         <p style="margin: 25px 0 0 0; color: #1e293b; font-size: 15px;">
-          Best regards,<br>
-          <strong>EDANBROOK HR Team</strong>
+          Best regards,<br><strong>EDANBROOK HR Team</strong>
         </p>
       `, 'Good luck with your interview!')
     }
@@ -628,21 +553,13 @@ const EMAIL_TEMPLATE_MAP = {
       <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
         📝 New Candidate Assessment Received
       </h2>
-      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        A candidate has completed their self-assessment and is awaiting review:
-      </p>
       ${getInfoBox([
         { label: 'Candidate Name', value: data.candidateName || 'N/A' },
         { label: 'Email', value: data.candidateEmail || 'N/A' },
-        { label: 'Phone', value: data.candidatePhone || 'N/A' },
         { label: 'Position Applied', value: data.position || 'N/A' },
-        { label: 'Experience', value: data.experience || 'N/A' },
-        { label: 'Expected Salary', value: data.expectedSalary || 'N/A' },
         { label: 'Overall Score', value: data.score ? `${data.score}%` : 'N/A' }
       ])}
-      ${data.score >= 80 ? getStatusBanner('⭐ High-scoring candidate! Consider prioritizing this application.', 'success') : 
-        data.score >= 60 ? getStatusBanner('Good candidate. Review assessment details for more information.', 'info') :
-        getStatusBanner('Review assessment details to evaluate candidate suitability.', 'warning')}
+      ${data.score >= 80 ? getStatusBanner('⭐ High-scoring candidate!', 'success') : getStatusBanner('Review assessment details.', 'info')}
       ${getButton('Review Candidate', DASHBOARD_URL)}
     `, 'Please review this candidate assessment.')
   },
@@ -653,28 +570,258 @@ const EMAIL_TEMPLATE_MAP = {
       <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
         Application Status Update
       </h2>
-      
       <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
         Dear <strong>${data.candidateName || 'Candidate'}</strong>,
       </p>
-      
       <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        Thank you for your interest in the <strong>${data.position || 'N/A'}</strong> position at EDANBROOK and for taking the time to complete our assessment.
+        Thank you for your interest in the <strong>${data.position || 'N/A'}</strong> position at EDANBROOK.
+        After careful consideration, we have decided to move forward with other candidates.
       </p>
-      
-      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        After careful consideration, we regret to inform you that we have decided to move forward with other candidates whose qualifications more closely match our current requirements.
-      </p>
-      
-      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        We encourage you to apply for future openings that match your skills and experience. We wish you the best in your career endeavors.
-      </p>
-      
       <p style="margin: 25px 0 0 0; color: #1e293b; font-size: 15px;">
-        Best regards,<br>
-        <strong>EDANBROOK HR Team</strong>
+        Best regards,<br><strong>EDANBROOK HR Team</strong>
       </p>
     `, 'Thank you for your interest in EDANBROOK.')
+  },
+
+  // =============== DESIGN FILE WORKFLOW TEMPLATES ===============
+  'design.submitted_for_approval': {
+    subject: '📐 Design File Pending Approval: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        📐 Design File Submitted for Approval
+      </h2>
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A design file has been submitted and requires your approval before it can be sent to the client.
+      </p>
+      ${getInfoBox([
+        { label: 'Project', value: `${data.projectName} (${data.projectCode || 'N/A'})` },
+        { label: 'Client', value: data.clientCompany || 'N/A' },
+        { label: 'File Name', value: data.fileName || 'N/A' },
+        { label: 'Submitted By', value: data.submittedBy || 'Designer' },
+        { label: 'Client Email', value: data.clientEmail || 'N/A' },
+        { label: 'Submitted', value: formatDate(new Date()) }
+      ])}
+      ${getStatusBanner('This design file requires your approval before it can be sent to the client.', 'warning')}
+      ${getButton('Review & Approve', `${DASHBOARD_URL}#design-approvals`)}
+    `, 'Please review and approve/reject this design file.')
+  },
+
+  'design.approved': {
+    subject: '✅ Design File Approved: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ✅ Design File Approved
+      </h2>
+      ${getStatusBanner('Great news! Your design file has been approved and is ready to send to the client.', 'success')}
+      ${getInfoBox([
+        { label: 'Project', value: data.projectName || 'N/A' },
+        { label: 'File Name', value: data.fileName || 'N/A' },
+        { label: 'Approved By', value: data.approvedBy || 'COO' },
+        { label: 'Approval Date', value: formatDate(new Date()) },
+        { label: 'Notes', value: data.approvalNotes || 'No additional notes' }
+      ])}
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        You can now send this design file to the client. Log in to the Designer Portal and click the "Send to Client" button.
+      </p>
+      ${getButton('Go to Designer Portal', `${DASHBOARD_URL}#designer-allocations`)}
+    `)
+  },
+
+  'design.rejected': {
+    subject: '❌ Design File Needs Revision: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        ❌ Design File Not Approved
+      </h2>
+      ${getStatusBanner('Your design file requires revisions before it can be sent to the client.', 'error')}
+      ${getInfoBox([
+        { label: 'Project', value: data.projectName || 'N/A' },
+        { label: 'File Name', value: data.fileName || 'N/A' },
+        { label: 'Reviewed By', value: data.rejectedBy || 'COO' },
+        { label: 'Review Date', value: formatDate(new Date()) }
+      ])}
+      <div style="margin: 25px 0; padding: 20px; background-color: #fef2f2; border-radius: 6px; border-left: 4px solid #ef4444;">
+        <h3 style="margin: 0 0 10px 0; color: #991b1b; font-size: 16px;">Reason for Rejection:</h3>
+        <p style="margin: 0; color: #7f1d1d; font-size: 15px; line-height: 1.6;">
+          ${data.rejectionReason || 'No specific reason provided. Please contact your supervisor.'}
+        </p>
+      </div>
+      <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        Please make the necessary revisions and re-upload the design file for approval.
+      </p>
+      ${getButton('Upload Revised Design', `${DASHBOARD_URL}#designer-allocations`)}
+    `)
+  },
+
+  'design.sent_to_client': {
+    subject: '📐 Design Drawings Ready: {{projectName}}',
+    html: (data) => `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Design Drawings - ${data.projectName || 'Project'}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f8fafc;">
+    <tr>
+      <td style="padding: 40px 20px;">
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="650" style="margin: 0 auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08);">
+          
+          <!-- Professional Header -->
+          <tr>
+            <td style="padding: 0;">
+              <div style="background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 50%, #3d7ab5 100%); padding: 40px 35px; border-radius: 12px 12px 0 0;">
+                <table width="100%" cellspacing="0" cellpadding="0">
+                  <tr>
+                    <td>
+                      <h1 style="margin: 0 0 8px 0; color: #ffffff; font-size: 28px; font-weight: 700; letter-spacing: 0.5px;">
+                        EDANBROOK
+                      </h1>
+                      <p style="margin: 0; color: #a8c5e2; font-size: 14px; font-weight: 500; letter-spacing: 1px;">
+                        STEEL DETAILING EXCELLENCE
+                      </p>
+                    </td>
+                    <td style="text-align: right;">
+                      <div style="background: rgba(255,255,255,0.15); padding: 12px 20px; border-radius: 8px; display: inline-block;">
+                        <span style="color: #ffffff; font-size: 13px; font-weight: 600;">PROJECT DELIVERY</span>
+                      </div>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 45px 40px;">
+              
+              <!-- Greeting -->
+              <p style="margin: 0 0 25px 0; color: #1e293b; font-size: 16px; line-height: 1.7;">
+                Dear ${data.clientName || 'Valued Client'},
+              </p>
+              
+              <p style="margin: 0 0 30px 0; color: #475569; font-size: 15px; line-height: 1.8;">
+                We are pleased to deliver the design drawings for your project. Our team has completed the detailing work and the files are now ready for your review.
+              </p>
+              
+              <!-- Project Details Box -->
+              <div style="background: linear-gradient(135deg, #f0f7ff 0%, #e8f4fd 100%); border-radius: 12px; padding: 25px 30px; margin: 30px 0; border-left: 5px solid #2d5a87;">
+                <h3 style="margin: 0 0 18px 0; color: #1e3a5f; font-size: 17px; font-weight: 700;">
+                  📋 Project Details
+                </h3>
+                <table cellspacing="0" cellpadding="0" style="width: 100%;">
+                  <tr>
+                    <td style="padding: 8px 0; color: #64748b; font-size: 14px; width: 140px; vertical-align: top;">Project Name:</td>
+                    <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 600;">${data.projectName || 'N/A'}</td>
+                  </tr>
+                  ${data.projectCode ? `
+                  <tr>
+                    <td style="padding: 8px 0; color: #64748b; font-size: 14px; vertical-align: top;">Project Code:</td>
+                    <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 600;">${data.projectCode}</td>
+                  </tr>
+                  ` : ''}
+                  <tr>
+                    <td style="padding: 8px 0; color: #64748b; font-size: 14px; vertical-align: top;">Client:</td>
+                    <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 600;">${data.clientCompany || 'N/A'}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 0; color: #64748b; font-size: 14px; vertical-align: top;">File Name:</td>
+                    <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 600;">${data.fileName || 'Design Package'}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 0; color: #64748b; font-size: 14px; vertical-align: top;">Delivery Date:</td>
+                    <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 600;">${formatDate(new Date())}</td>
+                  </tr>
+                </table>
+              </div>
+              
+              ${data.customMessage ? `
+              <!-- Custom Message -->
+              <div style="background: #fffbeb; border-radius: 10px; padding: 20px 25px; margin: 25px 0; border: 1px solid #fcd34d;">
+                <p style="margin: 0; color: #78350f; font-size: 14px; line-height: 1.7;">
+                  <strong>Message from our team:</strong><br>
+                  ${data.customMessage}
+                </p>
+              </div>
+              ` : ''}
+              
+              <!-- Download Button -->
+              <div style="text-align: center; margin: 40px 0;">
+                <a href="${data.fileUrl}" 
+                   target="_blank" 
+                   style="display: inline-block; background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%); color: #ffffff; text-decoration: none; padding: 18px 45px; border-radius: 10px; font-size: 16px; font-weight: 700; letter-spacing: 0.5px; box-shadow: 0 4px 15px rgba(30, 58, 95, 0.3);">
+                  📥 Download Design Files
+                </a>
+              </div>
+              
+              <p style="margin: 30px 0 0 0; color: #64748b; font-size: 13px; text-align: center; line-height: 1.6;">
+                If the download button doesn't work, please copy and paste this link into your browser:<br>
+                <a href="${data.fileUrl}" style="color: #2d5a87; word-break: break-all;">${data.fileUrl}</a>
+              </p>
+              
+              <!-- Next Steps -->
+              <div style="margin: 40px 0 30px 0; padding: 25px; background: #f8fafc; border-radius: 10px;">
+                <h4 style="margin: 0 0 15px 0; color: #1e293b; font-size: 15px; font-weight: 700;">📌 Next Steps</h4>
+                <ul style="margin: 0; padding: 0 0 0 20px; color: #475569; font-size: 14px; line-height: 2;">
+                  <li>Review the design drawings thoroughly</li>
+                  <li>Check for any discrepancies or required modifications</li>
+                  <li>Provide your feedback or approval within 48 hours</li>
+                  <li>Contact us immediately if you have any questions</li>
+                </ul>
+              </div>
+              
+              <!-- Closing -->
+              <p style="margin: 25px 0 5px 0; color: #475569; font-size: 15px; line-height: 1.7;">
+                If you have any questions or require any modifications, please don't hesitate to reach out to us.
+              </p>
+              
+              <p style="margin: 25px 0 0 0; color: #1e293b; font-size: 15px;">
+                Best regards,<br>
+                <strong style="color: #1e3a5f;">${data.senderName || 'The Edanbrook Team'}</strong><br>
+                <span style="color: #64748b; font-size: 13px;">Edanbrook Steel Detailing</span>
+              </p>
+              
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 30px 40px; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border-radius: 0 0 12px 12px;">
+              <table width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td>
+                    <p style="margin: 0 0 5px 0; color: #1e3a5f; font-size: 15px; font-weight: 700;">Edanbrook</p>
+                    <p style="margin: 0; color: #64748b; font-size: 12px; line-height: 1.6;">
+                      Professional Steel Detailing Services<br>
+                      Quality • Precision • Excellence
+                    </p>
+                  </td>
+                  <td style="text-align: right; vertical-align: top;">
+                    <p style="margin: 0; color: #64748b; font-size: 12px; line-height: 1.8;">
+                      📧 info@edanbrook.com<br>
+                      🌐 www.edanbrook.com
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;">
+              <p style="margin: 0; color: #94a3b8; font-size: 11px; text-align: center; line-height: 1.6;">
+                This email contains confidential project information. Please do not forward without authorization.<br>
+                © ${new Date().getFullYear()} Edanbrook. All rights reserved.
+              </p>
+            </td>
+          </tr>
+          
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+    `
   }
 };
 
@@ -730,7 +877,6 @@ async function getDesignManagerEmail(projectId) {
   return null;
 }
 
-// Get specific designer email by UID (for time requests)
 async function getDesignerEmailByUid(designerUid) {
   try {
     if (designerUid) {
@@ -798,7 +944,6 @@ async function sendEmailNotification(event, data) {
   if (['designer.allocated', 'time_request.approved', 'time_request.rejected'].includes(event)) {
       let designerEmail = data.designerEmail;
       
-      // If no email provided, try to fetch by designerUid or requestedByUid
       if (!designerEmail && (data.designerUid || data.requestedByUid)) {
           designerEmail = await getDesignerEmailByUid(data.designerUid || data.requestedByUid);
       }
@@ -841,6 +986,25 @@ async function sendEmailNotification(event, data) {
       }
   }
 
+  // =============== DESIGN FILE WORKFLOW RECIPIENTS ===============
+  // Add Designer for design approval/rejection
+  if (['design.approved', 'design.rejected'].includes(event)) {
+      let designerEmail = data.designerEmail;
+      if (designerEmail) {
+          recipients.push(designerEmail);
+          console.log(`🎨 Added Designer for design notification: ${designerEmail}`);
+      }
+  }
+
+  // Add Client for design sent to client
+  if (event === 'design.sent_to_client') {
+      let clientEmail = data.clientEmail;
+      if (clientEmail) {
+          recipients.push(clientEmail);
+          console.log(`👤 Added Client for design delivery: ${clientEmail}`);
+      }
+  }
+
   // 3. Clean List
   recipients = [...new Set(recipients.filter(e => e && e.includes('@')))];
 
@@ -858,15 +1022,17 @@ async function sendEmailNotification(event, data) {
     const html = typeof tmpl.html === 'function' ? tmpl.html(data) : interpolate(tmpl.html, data);
     const subject = interpolate(tmpl.subject, data);
 
-    // Use HR email for screening events
+    // Use appropriate FROM email based on event type
     const isHREvent = event.startsWith('screening.');
-    const fromEmail = isHREvent ? HR_FROM_EMAIL : FROM_EMAIL;
+    const isDesignClientEvent = event === 'design.sent_to_client';
+    let fromEmail = FROM_EMAIL;
+    if (isHREvent) fromEmail = HR_FROM_EMAIL;
+    if (isDesignClientEvent) fromEmail = DESIGN_FROM_EMAIL;
 
-    console.log(`🚀 Sending from [${fromEmail}] to [${recipients.length}] recipients (individually for privacy)...`);
+    console.log(`🚀 Sending from [${fromEmail}] to [${recipients.length}] recipients...`);
     console.log(`📧 Recipients: ${recipients.join(', ')}`);
     
     // 5. Send via Resend - INDIVIDUAL EMAILS FOR PRIVACY
-    // Each recipient only sees their own email address
     let successCount = 0;
     let failedRecipients = [];
     let lastMessageId = null;
@@ -875,7 +1041,7 @@ async function sendEmailNotification(event, data) {
         try {
             const result = await resend.emails.send({
                 from: fromEmail,
-                to: [recipient],  // Single recipient - they only see their own email
+                to: [recipient],
                 subject: subject,
                 html: html
             });
