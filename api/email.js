@@ -1,4 +1,7 @@
-// api/email.js - Enhanced Email Notification API with Timesheet & Invoice Notifications + Design File Workflow
+
+
+
+// api/email.js - Enhanced Email Notification API with Timesheet & Invoice Notifications + Design File Workflow + Document Controller
 const express = require('express');
 const { Resend } = require('resend');
 const admin = require('./_firebase-admin');
@@ -11,7 +14,8 @@ const db = admin.firestore();
 // ==========================================
 const FROM_EMAIL = 'EB-Tracker <sabin@edanbrook.com>'; 
 const HR_FROM_EMAIL = 'EDANBROOK HR <paul.a@edanbrook.com>'; // HR screening emails
-const DESIGN_FROM_EMAIL = 'EDANBROOK Design <design@edanbrook.com>'; // Design file emails
+const DESIGN_FROM_EMAIL = 'EDANBROOK Design <design@edanbrook.com>'; // Design file emails (used by Document Controller)
+const DC_FROM_EMAIL = 'EDANBROOK Document Controller <dc@edanbrook.com>'; // Document Controller emails
 const DASHBOARD_URL = 'https://edanbrook-tracker.web.app';
 
 const EMAIL_RECIPIENT_MAP = {
@@ -52,7 +56,7 @@ const EMAIL_RECIPIENT_MAP = {
   
   // Design File Workflow notification types
   'design.submitted_for_approval': ['coo', 'director'], // Designer submits → COO/Director
-  'design.approved': [],                                // Dynamic - designer email
+  'design.approved': ['document_controller'],            // COO approves → DC notified + designer (dynamic)
   'design.rejected': [],                                // Dynamic - designer email
   'design.sent_to_client': []                           // Dynamic - client email
 };
@@ -612,7 +616,7 @@ const EMAIL_TEMPLATE_MAP = {
       <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
         ✅ Design File Approved
       </h2>
-      ${getStatusBanner('Great news! Your design file has been approved and is ready to send to the client.', 'success')}
+      ${getStatusBanner('Great news! Your design file has been approved and will be sent to the client by Document Controller.', 'success')}
       ${getInfoBox([
         { label: 'Project', value: data.projectName || 'N/A' },
         { label: 'File Name', value: data.fileName || 'N/A' },
@@ -621,9 +625,9 @@ const EMAIL_TEMPLATE_MAP = {
         { label: 'Notes', value: data.approvalNotes || 'No additional notes' }
       ])}
       <p style="margin: 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        You can now send this design file to the client. Log in to the Designer Portal and click the "Send to Client" button.
+        The Document Controller will review and send this file to the client shortly. You will be notified when the file has been delivered.
       </p>
-      ${getButton('Go to Designer Portal', `${DASHBOARD_URL}#designer-allocations`)}
+      ${getButton('View My Design Files', `${DASHBOARD_URL}#designer-allocations`)}
     `)
   },
 
@@ -895,6 +899,11 @@ async function getDesignerEmailByUid(designerUid) {
   return null;
 }
 
+// Document Controller emails - hardcoded since they are specific roles
+function getDCEmails() {
+  return ['iva@edanbrook.com', 'dc@edanbrook.com'];
+}
+
 function interpolate(template, data) {
   let result = template || '';
   for (const key in data) {
@@ -1002,12 +1011,26 @@ async function sendEmailNotification(event, data) {
       }
   }
 
-  // Add Client for design sent to client
+  // Add Document Controllers for design approval (so they can send to client)
+  if (event === 'design.approved') {
+      const dcEmails = getDCEmails();
+      recipients.push(...dcEmails);
+      console.log(`📄 Added Document Controllers for approved design: ${dcEmails.join(', ')}`);
+  }
+
+  // Add Client and CC recipients for design sent to client
   if (event === 'design.sent_to_client') {
       let clientEmail = data.clientEmail;
       if (clientEmail) {
           recipients.push(clientEmail);
           console.log(`👤 Added Client for design delivery: ${clientEmail}`);
+      }
+      
+      // Add CC recipients
+      if (data.ccEmails && Array.isArray(data.ccEmails) && data.ccEmails.length > 0) {
+          const validCCEmails = data.ccEmails.filter(e => e && e.includes('@'));
+          recipients.push(...validCCEmails);
+          console.log(`📋 Added ${validCCEmails.length} CC recipients: ${validCCEmails.join(', ')}`);
       }
   }
 
