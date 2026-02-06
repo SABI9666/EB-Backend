@@ -14,8 +14,8 @@ const db = admin.firestore();
 // ==========================================
 const FROM_EMAIL = 'EB-Tracker <sabin@edanbrook.com>'; 
 const HR_FROM_EMAIL = 'EDANBROOK HR <paul.a@edanbrook.com>'; // HR screening emails
-const DESIGN_FROM_EMAIL = 'EDANBROOK Design <design@edanbrook.com>'; // Design file emails (used by Document Controller)
-const DC_FROM_EMAIL = 'EDANBROOK Document Controller <dc@edanbrook.com>'; // Document Controller emails
+const DESIGN_FROM_EMAIL = 'EDANBROOK Design <iva@edanbrook.com>'; // Design file emails (used by Document Controller)
+const DC_FROM_EMAIL = 'EDANBROOK Document Controller <iva@edanbrook.com>'; // Document Controller emails
 const DASHBOARD_URL = 'https://edanbrook-tracker.web.app';
 
 const EMAIL_RECIPIENT_MAP = {
