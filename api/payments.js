@@ -356,6 +356,20 @@ const handler = async (req, res) => {
                     updates.invoiceNo = data.invoiceNo || payment.invoiceNo;
                     activityDetail = 'Invoice updated';
                     break;
+
+                case 'edit_invoice':
+                    if (data.invoiceNo) updates.invoiceNo = data.invoiceNo;
+                    if (data.invoiceAmount !== undefined) {
+                        updates.invoiceAmount = parseFloat(data.invoiceAmount) || 0;
+                        updates.balanceOutstanding = Math.max(0, (parseFloat(data.invoiceAmount) || 0) - (payment.paymentReceivedAmount || 0));
+                    }
+                    if (data.invoiceDate) updates.invoiceDate = data.invoiceDate;
+                    if (data.paymentDueDate) updates.paymentDueDate = data.paymentDueDate;
+                    if (data.paymentTerms) updates.paymentTerms = data.paymentTerms;
+                    if (data.milestoneDescription !== undefined) updates.milestoneDescription = data.milestoneDescription;
+                    if (data.remarks !== undefined) updates.remarks = data.remarks;
+                    activityDetail = `Invoice ${payment.invoiceNo} details edited`;
+                    break;
                     
                 default:
                     return res.status(400).json({ 
@@ -408,6 +422,60 @@ const handler = async (req, res) => {
                 success: true, 
                 message: 'Payment record updated successfully' 
             });
+        }
+
+        if (req.method === 'DELETE') {
+            const { id } = req.query;
+
+            if (!id) {
+                return res.status(400).json({ success: false, error: 'Payment ID is required' });
+            }
+
+            // Only accounts, COO, or Director can delete
+            if (!['accounts', 'coo', 'director'].includes(req.user.role)) {
+                return res.status(403).json({ success: false, error: 'Permission denied' });
+            }
+
+            const paymentRef = db.collection('payments').doc(id);
+            const paymentDoc = await paymentRef.get();
+
+            if (!paymentDoc.exists) {
+                return res.status(404).json({ success: false, error: 'Invoice not found' });
+            }
+
+            const payment = paymentDoc.data();
+
+            // Don't allow deleting paid invoices
+            if (payment.paymentStatus === 'fully_paid') {
+                return res.status(400).json({ success: false, error: 'Cannot delete paid invoices' });
+            }
+
+            await paymentRef.delete();
+
+            // Reverse the project's totalInvoiced
+            if (payment.projectId) {
+                try {
+                    await db.collection('projects').doc(payment.projectId).update({
+                        totalInvoiced: admin.firestore.FieldValue.increment(-(payment.invoiceAmount || 0)),
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                } catch (e) {
+                    console.error('Error updating project after invoice delete:', e);
+                }
+            }
+
+            // Log activity
+            await db.collection('activities').add({
+                type: 'invoice_deleted',
+                details: `Invoice ${payment.invoiceNo || 'N/A'} deleted for ${payment.projectName || 'N/A'}`,
+                performedByName: req.user.name,
+                performedByRole: req.user.role,
+                performedByUid: req.user.uid,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                projectId: payment.projectId || null
+            });
+
+            return res.status(200).json({ success: true, message: 'Invoice deleted successfully' });
         }
 
         return res.status(405).json({ success: false, error: 'Method not allowed' });
