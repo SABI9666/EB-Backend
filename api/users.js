@@ -350,11 +350,12 @@ const handler = async (req, res) => {
         // Used when a user is deleted and re-registered with a new UID
         // ============================================
         if (req.method === 'PATCH') {
-            // Only Director can perform UID migration
-            if (req.user.role !== 'director') {
+            // Only Director or specific admin emails can perform UID migration
+            const ADMIN_EMAILS = ['director@edanbrook.com', 'ajit@edanbrook.com', 'sabin@edanbrook.com'];
+            if (req.user.role !== 'director' && !ADMIN_EMAILS.includes((req.user.email || '').toLowerCase())) {
                 return res.status(403).json({
                     success: false,
-                    error: 'Only Director can perform UID migration'
+                    error: 'Only Director or admin can perform UID migration'
                 });
             }
 
