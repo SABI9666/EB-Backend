@@ -21,34 +21,56 @@ const handler = async (req, res) => {
         await util.promisify(verifyToken)(req, res);
 
         if (req.method === 'POST') {
-            const { 
+            const {
                 projectId,
                 invoiceNo,
                 invoiceDate,
                 amount,
                 paymentDueDate,
                 paymentTerms,
-                milestoneDescription
+                milestoneDescription,
+                // New fields for BDM assignment and variation support
+                bdmUid,
+                bdmName,
+                bdmEmail,
+                variationId,
+                variationCode,
+                invoiceType // 'project' or 'variation'
             } = req.body;
 
             // Only accounts team can create payment records
             if (!['accounts', 'coo', 'director'].includes(req.user.role)) {
-                return res.status(403).json({ 
-                    success: false, 
-                    error: 'Only Accounts team can create payment records' 
+                return res.status(403).json({
+                    success: false,
+                    error: 'Only Accounts team can create payment records'
                 });
             }
 
             // Verify project exists
             const projectDoc = await db.collection('projects').doc(projectId).get();
             if (!projectDoc.exists) {
-                return res.status(404).json({ 
-                    success: false, 
-                    error: 'Project not found' 
+                return res.status(404).json({
+                    success: false,
+                    error: 'Project not found'
                 });
             }
 
             const project = projectDoc.data();
+
+            // Determine BDM details - use provided values or fall back to project data
+            let assignedBdmUid = bdmUid || project.bdmUid || null;
+            let assignedBdmName = bdmName || project.bdmName || '';
+            let assignedBdmEmail = bdmEmail || project.bdmEmail || '';
+
+            // If BDM UID provided but no name/email, look up from users collection
+            if (assignedBdmUid && (!assignedBdmName || !assignedBdmEmail)) {
+                const bdmDoc = await db.collection('users').doc(assignedBdmUid).get();
+                if (bdmDoc.exists) {
+                    const bdmData = bdmDoc.data();
+                    assignedBdmName = assignedBdmName || bdmData.name || '';
+                    assignedBdmEmail = assignedBdmEmail || bdmData.email || '';
+                }
+            }
 
             const paymentData = {
                 projectId,
@@ -57,23 +79,33 @@ const handler = async (req, res) => {
                 clientCompany: project.clientCompany,
                 quoteValue: project.quoteValue,
                 currency: project.currency || 'USD',
-                
+
                 invoiceNo: invoiceNo || '',
                 invoiceDate: invoiceDate || admin.firestore.FieldValue.serverTimestamp(),
                 invoiceAmount: amount || 0,
                 paymentDueDate: paymentDueDate || null,
                 paymentTerms: paymentTerms || project.paymentTerms || '',
                 milestoneDescription: milestoneDescription || '',
-                
+
+                // BDM assignment
+                bdmUid: assignedBdmUid,
+                bdmName: assignedBdmName,
+                bdmEmail: assignedBdmEmail,
+
+                // Variation support
+                invoiceType: invoiceType || 'project',
+                variationId: variationId || null,
+                variationCode: variationCode || null,
+
                 paymentReceivedDate: null,
                 paymentReceivedAmount: 0,
                 balanceOutstanding: amount || 0,
                 paymentStatus: 'pending', // pending, partially_paid, fully_paid, delayed
-                
+
                 invoiceUrl: '',
                 paymentProofUrl: '',
                 remarks: '',
-                
+
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 createdBy: req.user.name,
                 createdByUid: req.user.uid,
@@ -91,9 +123,10 @@ const handler = async (req, res) => {
             });
 
             // Create activity
+            const variationLabel = variationCode ? ` (Variation: ${variationCode})` : '';
             await db.collection('activities').add({
                 type: 'invoice_created',
-                details: `Invoice ${invoiceNo} generated for ${project.projectName}`,
+                details: `Invoice ${invoiceNo} generated for ${project.projectName}${variationLabel}${assignedBdmName ? ' - BDM: ' + assignedBdmName : ''}`,
                 performedByName: req.user.name,
                 performedByRole: req.user.role,
                 performedByUid: req.user.uid,
@@ -102,14 +135,31 @@ const handler = async (req, res) => {
                 paymentId: docRef.id
             });
 
-            // Send notifications
-            const notificationRoles = ['bdm', 'coo', 'director'];
+            // Send notifications to COO and Director
+            const notificationRoles = ['coo', 'director'];
             for (const role of notificationRoles) {
+                const roleSnapshot = await db.collection('users').where('role', '==', role).where('status', '==', 'active').get();
+                roleSnapshot.forEach(userDoc => {
+                    db.collection('notifications').add({
+                        type: 'invoice_created',
+                        recipientRole: role,
+                        recipientUid: userDoc.id,
+                        message: `Invoice ${invoiceNo} generated for ${project.projectName}${variationLabel} - Amount: ${project.currency || 'USD'} ${amount}`,
+                        projectId: projectId,
+                        paymentId: docRef.id,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false
+                    });
+                });
+            }
+
+            // Notify the assigned BDM specifically
+            if (assignedBdmUid) {
                 await db.collection('notifications').add({
                     type: 'invoice_created',
-                    recipientRole: role,
-                    recipientUid: role === 'bdm' ? project.bdmUid : null,
-                    message: `Invoice generated for ${project.projectName} - Amount: ${project.currency} ${amount}`,
+                    recipientRole: 'bdm',
+                    recipientUid: assignedBdmUid,
+                    message: `Invoice ${invoiceNo} created for your project ${project.projectName}${variationLabel} - Amount: ${project.currency || 'USD'} ${amount}`,
                     projectId: projectId,
                     paymentId: docRef.id,
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -117,16 +167,25 @@ const handler = async (req, res) => {
                 });
             }
 
-            return res.status(201).json({ 
-                success: true, 
+            return res.status(201).json({
+                success: true,
                 data: { id: docRef.id, ...paymentData },
-                message: 'Payment record created successfully' 
+                message: 'Payment record created successfully'
             });
         }
 
         if (req.method === 'GET') {
-            const { projectId, status, overdue } = req.query;
-            
+            const { projectId, status, overdue, id: paymentId } = req.query;
+
+            // Get single payment by ID
+            if (paymentId) {
+                const paymentDoc = await db.collection('payments').doc(paymentId).get();
+                if (!paymentDoc.exists) {
+                    return res.status(404).json({ success: false, error: 'Payment not found' });
+                }
+                return res.status(200).json({ success: true, data: { id: paymentDoc.id, ...paymentDoc.data() } });
+            }
+
             let query = db.collection('payments').orderBy('createdAt', 'desc');
             
             if (projectId) {
@@ -161,12 +220,77 @@ const handler = async (req, res) => {
 
         if (req.method === 'PUT') {
             const { id } = req.query;
-            const { action, data } = req.body;
-            
-            if (!id || !action) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'Payment ID and action required' 
+            const { action, data, status: directStatus, notes: directNotes } = req.body;
+
+            if (!id) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Payment ID is required'
+                });
+            }
+
+            // Support direct status update from frontend (without action pattern)
+            if (!action && directStatus) {
+                const paymentRef = db.collection('payments').doc(id);
+                const paymentDoc = await paymentRef.get();
+                if (!paymentDoc.exists) {
+                    return res.status(404).json({ success: false, error: 'Payment not found' });
+                }
+                const payment = paymentDoc.data();
+
+                const statusUpdates = {
+                    paymentStatus: directStatus.toLowerCase().replace(/ /g, '_'),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedBy: req.user.name,
+                    updatedByUid: req.user.uid
+                };
+                if (directNotes) {
+                    statusUpdates.remarks = directNotes;
+                }
+                if (directStatus === 'Paid') {
+                    statusUpdates.paymentReceivedDate = admin.firestore.FieldValue.serverTimestamp();
+                    statusUpdates.paymentReceivedAmount = payment.invoiceAmount || 0;
+                    statusUpdates.balanceOutstanding = 0;
+                    statusUpdates.paymentStatus = 'fully_paid';
+                }
+                await paymentRef.update(statusUpdates);
+
+                // Log activity
+                await db.collection('activities').add({
+                    type: 'payment_status_updated',
+                    details: `Invoice ${payment.invoiceNo} status updated to ${directStatus}${directNotes ? ' - ' + directNotes : ''}`,
+                    performedByName: req.user.name,
+                    performedByRole: req.user.role,
+                    performedByUid: req.user.uid,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    projectId: payment.projectId,
+                    paymentId: id
+                });
+
+                // Notify BDM of status change
+                if (payment.bdmUid) {
+                    await db.collection('notifications').add({
+                        type: 'invoice_status_updated',
+                        recipientRole: 'bdm',
+                        recipientUid: payment.bdmUid,
+                        message: `Invoice ${payment.invoiceNo} for ${payment.projectName} status updated to: ${directStatus}`,
+                        projectId: payment.projectId,
+                        paymentId: id,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false
+                    });
+                }
+
+                return res.status(200).json({
+                    success: true,
+                    message: 'Payment status updated successfully'
+                });
+            }
+
+            if (!action) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Action or status is required'
                 });
             }
             
