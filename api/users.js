@@ -65,8 +65,8 @@ const handler = async (req, res) => {
             
             // --- Get user list (from uploaded file) ---
             
-            // Only COO, Director, and Design Lead can fetch users list
-            if (!['coo', 'director', 'design_lead'].includes(req.user.role)) {
+            // Only COO, Director, Design Lead, and Accounts can fetch users list
+            if (!['coo', 'director', 'design_lead', 'accounts'].includes(req.user.role)) {
                 return res.status(403).json({ 
                     success: false, 
                     error: 'You do not have permission to view users' 

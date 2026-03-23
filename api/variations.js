@@ -60,7 +60,7 @@ const handler = async (req, res) => {
 
             // --- Get a single variation by ID ---
             if (id) {
-                if (req.user.role !== 'coo' && req.user.role !== 'director') {
+                if (req.user.role !== 'coo' && req.user.role !== 'director' && req.user.role !== 'accounts') {
                     return res.status(403).json({ success: false, error: 'Permission denied.' });
                 }
                 const doc = await db.collection('variations').doc(id).get();
@@ -73,7 +73,7 @@ const handler = async (req, res) => {
             // --- Get variations based on filters (e.g., for COO dashboard) ---
             let query = db.collection('variations');
 
-            if (req.user.role === 'coo' || req.user.role === 'director') {
+            if (req.user.role === 'coo' || req.user.role === 'director' || req.user.role === 'accounts') {
                 if (status) {
                     query = query.where('status', '==', status);
                 }
