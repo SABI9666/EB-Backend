@@ -8,7 +8,7 @@ const db = admin.firestore();
 const allowCors = fn => async (req, res) => {
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST,PUT');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST,PUT,PATCH');
     res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization');
     if (req.method === 'OPTIONS') {
         res.status(200).end();
@@ -342,6 +342,179 @@ const handler = async (req, res) => {
             return res.status(200).json({ 
                 success: true, 
                 message: 'User updated successfully' 
+            });
+        }
+
+        // ============================================
+        // PATCH - Migrate/transfer documents from old UID to new UID
+        // Used when a user is deleted and re-registered with a new UID
+        // ============================================
+        if (req.method === 'PATCH') {
+            // Only Director can perform UID migration
+            if (req.user.role !== 'director') {
+                return res.status(403).json({
+                    success: false,
+                    error: 'Only Director can perform UID migration'
+                });
+            }
+
+            if (!req.body || Object.keys(req.body).length === 0) {
+                await new Promise((resolve) => {
+                    const chunks = [];
+                    req.on('data', (chunk) => chunks.push(chunk));
+                    req.on('end', () => {
+                        try {
+                            const bodyBuffer = Buffer.concat(chunks);
+                            req.body = bodyBuffer.length > 0 ? JSON.parse(bodyBuffer.toString()) : {};
+                        } catch (e) {
+                            req.body = {};
+                        }
+                        resolve();
+                    });
+                });
+            }
+
+            const { oldUid, newUid } = req.body;
+            if (!oldUid || !newUid) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Both oldUid and newUid are required'
+                });
+            }
+
+            const migrationLog = [];
+            const batch = db.batch();
+            let batchCount = 0;
+            const MAX_BATCH = 400; // Firestore limit is 500, leave room
+
+            // Helper to commit batch if near limit
+            async function commitIfNeeded() {
+                if (batchCount >= MAX_BATCH) {
+                    await batch.commit();
+                    batchCount = 0;
+                }
+            }
+
+            // 1. Migrate proposals (createdByUid)
+            const proposalsSnap = await db.collection('proposals').where('createdByUid', '==', oldUid).get();
+            for (const doc of proposalsSnap.docs) {
+                batch.update(doc.ref, { createdByUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                batchCount++;
+                migrationLog.push(`proposal: ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 2. Migrate projects (bdmUid)
+            const projectsSnap = await db.collection('projects').where('bdmUid', '==', oldUid).get();
+            for (const doc of projectsSnap.docs) {
+                batch.update(doc.ref, { bdmUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                batchCount++;
+                migrationLog.push(`project (bdm): ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 3. Migrate projects (designLeadUid)
+            const projectsDLSnap = await db.collection('projects').where('designLeadUid', '==', oldUid).get();
+            for (const doc of projectsDLSnap.docs) {
+                batch.update(doc.ref, { designLeadUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                batchCount++;
+                migrationLog.push(`project (designLead): ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 4. Migrate payments (bdmUid)
+            const paymentsSnap = await db.collection('payments').where('bdmUid', '==', oldUid).get();
+            for (const doc of paymentsSnap.docs) {
+                batch.update(doc.ref, { bdmUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                batchCount++;
+                migrationLog.push(`payment: ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 5. Migrate payments (createdByUid)
+            const paymentsCreatedSnap = await db.collection('payments').where('createdByUid', '==', oldUid).get();
+            for (const doc of paymentsCreatedSnap.docs) {
+                batch.update(doc.ref, { createdByUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                batchCount++;
+                migrationLog.push(`payment (created): ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 6. Migrate notifications (recipientUid)
+            const notificationsSnap = await db.collection('notifications').where('recipientUid', '==', oldUid).get();
+            for (const doc of notificationsSnap.docs) {
+                batch.update(doc.ref, { recipientUid: newUid });
+                batchCount++;
+                migrationLog.push(`notification: ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 7. Migrate tasks (designerUid)
+            const tasksSnap = await db.collection('tasks').where('designerUid', '==', oldUid).get();
+            for (const doc of tasksSnap.docs) {
+                batch.update(doc.ref, { designerUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                batchCount++;
+                migrationLog.push(`task: ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 8. Migrate timesheets (designerUid)
+            const timesheetsSnap = await db.collection('timesheets').where('designerUid', '==', oldUid).get();
+            for (const doc of timesheetsSnap.docs) {
+                batch.update(doc.ref, { designerUid: newUid });
+                batchCount++;
+                migrationLog.push(`timesheet: ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 9. Migrate variations (createdByUid)
+            const variationsSnap = await db.collection('variations').where('createdByUid', '==', oldUid).get();
+            for (const doc of variationsSnap.docs) {
+                batch.update(doc.ref, { createdByUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                batchCount++;
+                migrationLog.push(`variation: ${doc.id}`);
+                await commitIfNeeded();
+            }
+
+            // 10. Copy old user doc to new UID if new doc doesn't have full data
+            const oldUserDoc = await db.collection('users').doc(oldUid).get();
+            const newUserDoc = await db.collection('users').doc(newUid).get();
+            if (oldUserDoc.exists && newUserDoc.exists) {
+                const oldData = oldUserDoc.data();
+                const newData = newUserDoc.data();
+                // Merge old data into new doc (preserve new auth-related fields)
+                const mergedData = {
+                    ...oldData,
+                    ...newData,
+                    migratedFromUid: oldUid,
+                    migratedAt: admin.firestore.FieldValue.serverTimestamp()
+                };
+                batch.set(db.collection('users').doc(newUid), mergedData, { merge: true });
+                batchCount++;
+                migrationLog.push(`user doc merged: ${oldUid} -> ${newUid}`);
+            }
+
+            // Commit remaining batch
+            if (batchCount > 0) {
+                await batch.commit();
+            }
+
+            // Log the migration activity
+            await db.collection('activities').add({
+                type: 'uid_migration',
+                details: `UID migration: ${oldUid} -> ${newUid}. ${migrationLog.length} documents updated.`,
+                performedByName: req.user.name,
+                performedByRole: req.user.role,
+                performedByUid: req.user.uid,
+                timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                migrationLog: migrationLog
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: `Successfully migrated ${migrationLog.length} documents from old UID to new UID`,
+                migratedCount: migrationLog.length,
+                details: migrationLog
             });
         }
 
