@@ -26,6 +26,7 @@ const handler = async (req, res) => {
                 invoiceNo,
                 invoiceDate,
                 amount,
+                currency,
                 paymentDueDate,
                 paymentTerms,
                 milestoneDescription,
@@ -78,7 +79,7 @@ const handler = async (req, res) => {
                 projectName: project.projectName,
                 clientCompany: project.clientCompany,
                 quoteValue: project.quoteValue,
-                currency: project.currency || 'USD',
+                currency: currency || project.currency || 'USD',
 
                 invoiceNo: invoiceNo || '',
                 invoiceDate: invoiceDate || admin.firestore.FieldValue.serverTimestamp(),
@@ -363,6 +364,7 @@ const handler = async (req, res) => {
                         updates.invoiceAmount = parseFloat(data.invoiceAmount) || 0;
                         updates.balanceOutstanding = Math.max(0, (parseFloat(data.invoiceAmount) || 0) - (payment.paymentReceivedAmount || 0));
                     }
+                    if (data.currency) updates.currency = data.currency;
                     if (data.invoiceDate) updates.invoiceDate = data.invoiceDate;
                     if (data.paymentDueDate) updates.paymentDueDate = data.paymentDueDate;
                     if (data.paymentTerms) updates.paymentTerms = data.paymentTerms;
