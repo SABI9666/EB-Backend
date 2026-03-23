@@ -374,135 +374,224 @@ const handler = async (req, res) => {
                 });
             }
 
-            const { oldUid, newUid } = req.body;
-            if (!oldUid || !newUid) {
+            const { oldUid, newUid, email } = req.body;
+
+            let resolvedOldUid = oldUid;
+            let resolvedNewUid = newUid;
+
+            // Auto-detect UIDs from email
+            if (email && (!resolvedOldUid || !resolvedNewUid)) {
+                const emailLower = email.toLowerCase();
+
+                // Find NEW UID: the current user doc in Firestore with this email
+                if (!resolvedNewUid) {
+                    const newUserSnap = await db.collection('users').where('email', '==', emailLower).limit(1).get();
+                    if (!newUserSnap.empty) {
+                        resolvedNewUid = newUserSnap.docs[0].id;
+                    }
+                    // Also check Firebase Auth
+                    if (!resolvedNewUid) {
+                        try {
+                            const authUser = await admin.auth().getUserByEmail(emailLower);
+                            resolvedNewUid = authUser.uid;
+                        } catch (e) { /* user not found in auth */ }
+                    }
+                }
+
+                // Find OLD UID: scan proposals, projects, activities for this email/name
+                if (!resolvedOldUid) {
+                    // Check proposals for createdByUid where email matches
+                    const proposalsSnap = await db.collection('proposals')
+                        .where('createdByEmail', '==', emailLower).limit(1).get();
+                    if (!proposalsSnap.empty) {
+                        resolvedOldUid = proposalsSnap.docs[0].data().createdByUid;
+                    }
+
+                    // If not found by email field, check activities
+                    if (!resolvedOldUid) {
+                        const activitiesSnap = await db.collection('activities')
+                            .where('performedByUid', '!=', resolvedNewUid)
+                            .limit(100).get();
+                        // Search through for matching email pattern in details
+                        for (const doc of activitiesSnap.docs) {
+                            const data = doc.data();
+                            if (data.performedByUid && data.performedByUid !== resolvedNewUid) {
+                                // Check if this UID belongs to a deleted user with same email
+                                const oldUserDoc = await db.collection('users').doc(data.performedByUid).get();
+                                if (!oldUserDoc.exists) {
+                                    // This UID no longer exists in users - could be the deleted one
+                                    // Verify by checking if proposals exist under this UID
+                                    const checkProposals = await db.collection('proposals')
+                                        .where('createdByUid', '==', data.performedByUid).limit(1).get();
+                                    if (!checkProposals.empty) {
+                                        resolvedOldUid = data.performedByUid;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Last resort: scan all proposals for UIDs that no longer exist in users collection
+                    if (!resolvedOldUid) {
+                        const allProposalsSnap = await db.collection('proposals').limit(200).get();
+                        for (const doc of allProposalsSnap.docs) {
+                            const data = doc.data();
+                            if (data.createdByUid && data.createdByUid !== resolvedNewUid) {
+                                const checkUser = await db.collection('users').doc(data.createdByUid).get();
+                                if (!checkUser.exists) {
+                                    // Found an orphaned UID - this is likely the old user
+                                    resolvedOldUid = data.createdByUid;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!resolvedOldUid || !resolvedNewUid) {
                 return res.status(400).json({
                     success: false,
-                    error: 'Both oldUid and newUid are required'
+                    error: `Could not resolve UIDs. ${!resolvedOldUid ? 'Old UID not found.' : ''} ${!resolvedNewUid ? 'New UID not found.' : ''} Try providing oldUid and newUid manually.`,
+                    detectedOldUid: resolvedOldUid || null,
+                    detectedNewUid: resolvedNewUid || null
+                });
+            }
+
+            if (resolvedOldUid === resolvedNewUid) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Old UID and New UID are the same. No migration needed.'
                 });
             }
 
             const migrationLog = [];
-            const batch = db.batch();
-            let batchCount = 0;
-            const MAX_BATCH = 400; // Firestore limit is 500, leave room
+            let totalBatchOps = 0;
 
-            // Helper to commit batch if near limit
-            async function commitIfNeeded() {
-                if (batchCount >= MAX_BATCH) {
-                    await batch.commit();
-                    batchCount = 0;
+            // Use multiple batches to handle large datasets
+            async function runBatch(operations) {
+                const BATCH_LIMIT = 400;
+                let currentBatch = db.batch();
+                let currentCount = 0;
+                for (const op of operations) {
+                    op(currentBatch);
+                    currentCount++;
+                    totalBatchOps++;
+                    if (currentCount >= BATCH_LIMIT) {
+                        await currentBatch.commit();
+                        currentBatch = db.batch();
+                        currentCount = 0;
+                    }
+                }
+                if (currentCount > 0) {
+                    await currentBatch.commit();
                 }
             }
 
             // 1. Migrate proposals (createdByUid)
-            const proposalsSnap = await db.collection('proposals').where('createdByUid', '==', oldUid).get();
-            for (const doc of proposalsSnap.docs) {
-                batch.update(doc.ref, { createdByUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-                batchCount++;
-                migrationLog.push(`proposal: ${doc.id}`);
-                await commitIfNeeded();
+            const proposalsSnap = await db.collection('proposals').where('createdByUid', '==', resolvedOldUid).get();
+            if (!proposalsSnap.empty) {
+                await runBatch(proposalsSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { createdByUid: resolvedNewUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    migrationLog.push(`proposal: ${doc.id}`);
+                }));
             }
 
             // 2. Migrate projects (bdmUid)
-            const projectsSnap = await db.collection('projects').where('bdmUid', '==', oldUid).get();
-            for (const doc of projectsSnap.docs) {
-                batch.update(doc.ref, { bdmUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-                batchCount++;
-                migrationLog.push(`project (bdm): ${doc.id}`);
-                await commitIfNeeded();
+            const projectsSnap = await db.collection('projects').where('bdmUid', '==', resolvedOldUid).get();
+            if (!projectsSnap.empty) {
+                await runBatch(projectsSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { bdmUid: resolvedNewUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    migrationLog.push(`project (bdm): ${doc.id}`);
+                }));
             }
 
             // 3. Migrate projects (designLeadUid)
-            const projectsDLSnap = await db.collection('projects').where('designLeadUid', '==', oldUid).get();
-            for (const doc of projectsDLSnap.docs) {
-                batch.update(doc.ref, { designLeadUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-                batchCount++;
-                migrationLog.push(`project (designLead): ${doc.id}`);
-                await commitIfNeeded();
+            const projectsDLSnap = await db.collection('projects').where('designLeadUid', '==', resolvedOldUid).get();
+            if (!projectsDLSnap.empty) {
+                await runBatch(projectsDLSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { designLeadUid: resolvedNewUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    migrationLog.push(`project (designLead): ${doc.id}`);
+                }));
             }
 
             // 4. Migrate payments (bdmUid)
-            const paymentsSnap = await db.collection('payments').where('bdmUid', '==', oldUid).get();
-            for (const doc of paymentsSnap.docs) {
-                batch.update(doc.ref, { bdmUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-                batchCount++;
-                migrationLog.push(`payment: ${doc.id}`);
-                await commitIfNeeded();
+            const paymentsSnap = await db.collection('payments').where('bdmUid', '==', resolvedOldUid).get();
+            if (!paymentsSnap.empty) {
+                await runBatch(paymentsSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { bdmUid: resolvedNewUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    migrationLog.push(`payment: ${doc.id}`);
+                }));
             }
 
             // 5. Migrate payments (createdByUid)
-            const paymentsCreatedSnap = await db.collection('payments').where('createdByUid', '==', oldUid).get();
-            for (const doc of paymentsCreatedSnap.docs) {
-                batch.update(doc.ref, { createdByUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-                batchCount++;
-                migrationLog.push(`payment (created): ${doc.id}`);
-                await commitIfNeeded();
+            const paymentsCreatedSnap = await db.collection('payments').where('createdByUid', '==', resolvedOldUid).get();
+            if (!paymentsCreatedSnap.empty) {
+                await runBatch(paymentsCreatedSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { createdByUid: resolvedNewUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    migrationLog.push(`payment (created): ${doc.id}`);
+                }));
             }
 
             // 6. Migrate notifications (recipientUid)
-            const notificationsSnap = await db.collection('notifications').where('recipientUid', '==', oldUid).get();
-            for (const doc of notificationsSnap.docs) {
-                batch.update(doc.ref, { recipientUid: newUid });
-                batchCount++;
-                migrationLog.push(`notification: ${doc.id}`);
-                await commitIfNeeded();
+            const notificationsSnap = await db.collection('notifications').where('recipientUid', '==', resolvedOldUid).get();
+            if (!notificationsSnap.empty) {
+                await runBatch(notificationsSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { recipientUid: resolvedNewUid });
+                    migrationLog.push(`notification: ${doc.id}`);
+                }));
             }
 
             // 7. Migrate tasks (designerUid)
-            const tasksSnap = await db.collection('tasks').where('designerUid', '==', oldUid).get();
-            for (const doc of tasksSnap.docs) {
-                batch.update(doc.ref, { designerUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-                batchCount++;
-                migrationLog.push(`task: ${doc.id}`);
-                await commitIfNeeded();
+            const tasksSnap = await db.collection('tasks').where('designerUid', '==', resolvedOldUid).get();
+            if (!tasksSnap.empty) {
+                await runBatch(tasksSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { designerUid: resolvedNewUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    migrationLog.push(`task: ${doc.id}`);
+                }));
             }
 
             // 8. Migrate timesheets (designerUid)
-            const timesheetsSnap = await db.collection('timesheets').where('designerUid', '==', oldUid).get();
-            for (const doc of timesheetsSnap.docs) {
-                batch.update(doc.ref, { designerUid: newUid });
-                batchCount++;
-                migrationLog.push(`timesheet: ${doc.id}`);
-                await commitIfNeeded();
+            const timesheetsSnap = await db.collection('timesheets').where('designerUid', '==', resolvedOldUid).get();
+            if (!timesheetsSnap.empty) {
+                await runBatch(timesheetsSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { designerUid: resolvedNewUid });
+                    migrationLog.push(`timesheet: ${doc.id}`);
+                }));
             }
 
             // 9. Migrate variations (createdByUid)
-            const variationsSnap = await db.collection('variations').where('createdByUid', '==', oldUid).get();
-            for (const doc of variationsSnap.docs) {
-                batch.update(doc.ref, { createdByUid: newUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-                batchCount++;
-                migrationLog.push(`variation: ${doc.id}`);
-                await commitIfNeeded();
+            const variationsSnap = await db.collection('variations').where('createdByUid', '==', resolvedOldUid).get();
+            if (!variationsSnap.empty) {
+                await runBatch(variationsSnap.docs.map(doc => (batch) => {
+                    batch.update(doc.ref, { createdByUid: resolvedNewUid, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    migrationLog.push(`variation: ${doc.id}`);
+                }));
             }
 
             // 10. Copy old user doc to new UID if new doc doesn't have full data
-            const oldUserDoc = await db.collection('users').doc(oldUid).get();
-            const newUserDoc = await db.collection('users').doc(newUid).get();
+            const oldUserDoc = await db.collection('users').doc(resolvedOldUid).get();
+            const newUserDoc = await db.collection('users').doc(resolvedNewUid).get();
             if (oldUserDoc.exists && newUserDoc.exists) {
                 const oldData = oldUserDoc.data();
                 const newData = newUserDoc.data();
-                // Merge old data into new doc (preserve new auth-related fields)
                 const mergedData = {
                     ...oldData,
                     ...newData,
-                    migratedFromUid: oldUid,
+                    migratedFromUid: resolvedOldUid,
                     migratedAt: admin.firestore.FieldValue.serverTimestamp()
                 };
-                batch.set(db.collection('users').doc(newUid), mergedData, { merge: true });
-                batchCount++;
-                migrationLog.push(`user doc merged: ${oldUid} -> ${newUid}`);
-            }
-
-            // Commit remaining batch
-            if (batchCount > 0) {
-                await batch.commit();
+                const mergeBatch = db.batch();
+                mergeBatch.set(db.collection('users').doc(resolvedNewUid), mergedData, { merge: true });
+                await mergeBatch.commit();
+                migrationLog.push(`user doc merged: ${resolvedOldUid} -> ${resolvedNewUid}`);
             }
 
             // Log the migration activity
             await db.collection('activities').add({
                 type: 'uid_migration',
-                details: `UID migration: ${oldUid} -> ${newUid}. ${migrationLog.length} documents updated.`,
+                details: `UID migration: ${resolvedOldUid} -> ${resolvedNewUid}. ${migrationLog.length} documents updated.`,
                 performedByName: req.user.name,
                 performedByRole: req.user.role,
                 performedByUid: req.user.uid,
@@ -514,6 +603,8 @@ const handler = async (req, res) => {
                 success: true,
                 message: `Successfully migrated ${migrationLog.length} documents from old UID to new UID`,
                 migratedCount: migrationLog.length,
+                oldUid: resolvedOldUid,
+                newUid: resolvedNewUid,
                 details: migrationLog
             });
         }
