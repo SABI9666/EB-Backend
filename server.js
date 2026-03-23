@@ -187,6 +187,9 @@ try {
     console.log('  Loading screening...');
     const screeningHandler = require('./api/screening');
 
+    console.log('  Loading migrate-user...');
+    const migrateUserHandler = require('./api/migrate-user');
+
     console.log('✅ All handlers loaded successfully');
 
     // Register routes
@@ -222,6 +225,7 @@ try {
     // NEW: Register screening route
     // ============================================
     app.use('/api/screening', screeningHandler);
+    app.use('/api/migrate-user', migrateUserHandler);
 
     console.log('✅ All routes registered');
 
