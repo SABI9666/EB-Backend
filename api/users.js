@@ -399,52 +399,116 @@ const handler = async (req, res) => {
                     }
                 }
 
-                // Find OLD UID: scan proposals, projects, activities for this email/name
+                // Find OLD UID: scan proposals, projects, activities for this email
                 if (!resolvedOldUid) {
-                    // Check proposals for createdByUid where email matches
-                    const proposalsSnap = await db.collection('proposals')
-                        .where('createdByEmail', '==', emailLower).limit(1).get();
-                    if (!proposalsSnap.empty) {
-                        resolvedOldUid = proposalsSnap.docs[0].data().createdByUid;
+                    console.log(`🔍 Searching for old UID for email: ${emailLower}`);
+
+                    // Method 1: Check proposals where createdBy (email field) matches
+                    const proposalsByEmail = await db.collection('proposals')
+                        .where('createdBy', '==', emailLower).limit(1).get();
+                    if (!proposalsByEmail.empty) {
+                        const foundUid = proposalsByEmail.docs[0].data().createdByUid;
+                        if (foundUid !== resolvedNewUid) {
+                            resolvedOldUid = foundUid;
+                            console.log(`✅ Found old UID from proposals.createdBy: ${resolvedOldUid}`);
+                        }
                     }
 
-                    // If not found by email field, check activities
+                    // Method 2: Check proposals where createdByEmail matches
                     if (!resolvedOldUid) {
-                        const activitiesSnap = await db.collection('activities')
-                            .where('performedByUid', '!=', resolvedNewUid)
-                            .limit(100).get();
-                        // Search through for matching email pattern in details
-                        for (const doc of activitiesSnap.docs) {
-                            const data = doc.data();
-                            if (data.performedByUid && data.performedByUid !== resolvedNewUid) {
-                                // Check if this UID belongs to a deleted user with same email
-                                const oldUserDoc = await db.collection('users').doc(data.performedByUid).get();
-                                if (!oldUserDoc.exists) {
-                                    // This UID no longer exists in users - could be the deleted one
-                                    // Verify by checking if proposals exist under this UID
-                                    const checkProposals = await db.collection('proposals')
-                                        .where('createdByUid', '==', data.performedByUid).limit(1).get();
-                                    if (!checkProposals.empty) {
-                                        resolvedOldUid = data.performedByUid;
-                                        break;
-                                    }
-                                }
+                        const proposalsByEmail2 = await db.collection('proposals')
+                            .where('createdByEmail', '==', emailLower).limit(1).get();
+                        if (!proposalsByEmail2.empty) {
+                            const foundUid = proposalsByEmail2.docs[0].data().createdByUid;
+                            if (foundUid !== resolvedNewUid) {
+                                resolvedOldUid = foundUid;
+                                console.log(`✅ Found old UID from proposals.createdByEmail: ${resolvedOldUid}`);
                             }
                         }
                     }
 
-                    // Last resort: scan all proposals for UIDs that no longer exist in users collection
+                    // Method 3: Check projects where bdmEmail matches
                     if (!resolvedOldUid) {
-                        const allProposalsSnap = await db.collection('proposals').limit(200).get();
+                        const projectsByEmail = await db.collection('projects')
+                            .where('bdmEmail', '==', emailLower).limit(1).get();
+                        if (!projectsByEmail.empty) {
+                            const foundUid = projectsByEmail.docs[0].data().bdmUid;
+                            if (foundUid && foundUid !== resolvedNewUid) {
+                                resolvedOldUid = foundUid;
+                                console.log(`✅ Found old UID from projects.bdmEmail: ${resolvedOldUid}`);
+                            }
+                        }
+                    }
+
+                    // Method 4: Check payments where bdmEmail matches
+                    if (!resolvedOldUid) {
+                        const paymentsByEmail = await db.collection('payments')
+                            .where('bdmEmail', '==', emailLower).limit(1).get();
+                        if (!paymentsByEmail.empty) {
+                            const foundUid = paymentsByEmail.docs[0].data().bdmUid;
+                            if (foundUid && foundUid !== resolvedNewUid) {
+                                resolvedOldUid = foundUid;
+                                console.log(`✅ Found old UID from payments.bdmEmail: ${resolvedOldUid}`);
+                            }
+                        }
+                    }
+
+                    // Method 5: Brute force - scan ALL proposals for orphaned UIDs
+                    if (!resolvedOldUid) {
+                        console.log('🔍 Brute force scan: checking all proposals for orphaned UIDs...');
+                        const allProposalsSnap = await db.collection('proposals').get();
+                        const checkedUids = new Set();
                         for (const doc of allProposalsSnap.docs) {
                             const data = doc.data();
-                            if (data.createdByUid && data.createdByUid !== resolvedNewUid) {
-                                const checkUser = await db.collection('users').doc(data.createdByUid).get();
-                                if (!checkUser.exists) {
-                                    // Found an orphaned UID - this is likely the old user
-                                    resolvedOldUid = data.createdByUid;
+                            const uid = data.createdByUid;
+                            if (!uid || uid === resolvedNewUid || checkedUids.has(uid)) continue;
+                            checkedUids.add(uid);
+
+                            // Check if this UID still exists in users collection
+                            const userDoc = await db.collection('users').doc(uid).get();
+                            if (!userDoc.exists) {
+                                // Orphaned UID found - check if name/email hints match
+                                const createdByField = (data.createdBy || '').toLowerCase();
+                                const createdByName = (data.createdByName || '').toLowerCase();
+                                const emailPrefix = emailLower.split('@')[0];
+
+                                if (createdByField === emailLower ||
+                                    createdByField.includes(emailPrefix) ||
+                                    createdByName.includes(emailPrefix) ||
+                                    emailPrefix.includes(createdByName.split(' ')[0])) {
+                                    resolvedOldUid = uid;
+                                    console.log(`✅ Found old UID via brute force (name/email match): ${resolvedOldUid}`);
                                     break;
                                 }
+                            }
+                        }
+
+                        // If still not found, just take the first orphaned UID that has proposals
+                        if (!resolvedOldUid && checkedUids.size > 0) {
+                            // Return all orphaned UIDs so user can pick
+                            const orphanedUids = [];
+                            for (const uid of checkedUids) {
+                                const userDoc = await db.collection('users').doc(uid).get();
+                                if (!userDoc.exists) {
+                                    // Get a sample proposal for context
+                                    const sampleProp = await db.collection('proposals')
+                                        .where('createdByUid', '==', uid).limit(1).get();
+                                    const sampleData = sampleProp.empty ? {} : sampleProp.docs[0].data();
+                                    orphanedUids.push({
+                                        uid,
+                                        createdBy: sampleData.createdBy || 'unknown',
+                                        createdByName: sampleData.createdByName || 'unknown',
+                                        sampleProject: sampleData.projectName || 'unknown'
+                                    });
+                                }
+                            }
+                            if (orphanedUids.length > 0) {
+                                return res.status(400).json({
+                                    success: false,
+                                    error: `Could not auto-match old UID. Found ${orphanedUids.length} orphaned UID(s). Please check which one belongs to ${emailLower} and provide it manually.`,
+                                    detectedNewUid: resolvedNewUid,
+                                    orphanedUids: orphanedUids
+                                });
                             }
                         }
                     }
