@@ -298,7 +298,7 @@ router.put('/it-review/:id', verifyToken, async (req, res) => {
         }
 
         const { id } = req.params;
-        const { availability, itNotes } = req.body;
+        const { availability, itNotes, quotationUrl, quotationFileName, estimatedCost, vendor } = req.body;
         // availability: 'in_store' or 'need_purchase'
 
         if (!availability || !['in_store', 'need_purchase'].includes(availability)) {
@@ -320,11 +320,15 @@ router.put('/it-review/:id', verifyToken, async (req, res) => {
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
         };
 
+        // Attach quotation if provided (for purchase requests)
+        if (quotationUrl) updateData.quotationUrl = quotationUrl;
+        if (quotationFileName) updateData.quotationFileName = quotationFileName;
+        if (estimatedCost) updateData.itEstimatedCost = parseFloat(estimatedCost);
+        if (vendor) updateData.itVendor = vendor;
+
         if (availability === 'in_store') {
-            // Available in store - IT will issue directly
             updateData.status = 'available_in_store';
         } else {
-            // Need to purchase - send to HR for cost approval
             updateData.status = 'pending_hr';
         }
 
@@ -535,6 +539,91 @@ router.put('/director-approve/:id', verifyToken, async (req, res) => {
 
 // ============================================
 // PUT /api/it-tickets/update/:id
+// ============================================
+// POST /api/it-tickets/stock-purchase
+// IT team creates a stock purchase request with quotation
+// Same approval flow: IT → HR → COO → Director
+// ============================================
+router.post('/stock-purchase', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'it') {
+            return res.status(403).json({ success: false, error: 'Only IT team can create stock purchase requests' });
+        }
+
+        const { category, item, quantity, subject, description, vendor,
+                estimatedCost, currency, quotationUrl, quotationFileName } = req.body;
+
+        if (!item || !subject || !description) {
+            return res.status(400).json({
+                success: false,
+                error: 'Item, subject, and description are required'
+            });
+        }
+
+        const ticketData = {
+            ticketNumber: `ITS-${Date.now().toString(36).toUpperCase()}`,
+            ticketType: 'stock_purchase',
+            category: category || 'hardware',
+            categoryLabel: IT_CATEGORIES[category]?.label || 'Stock Purchase',
+            item,
+            quantity: parseInt(quantity) || 1,
+            priority: 'medium',
+            subject,
+            description,
+
+            // IT is the requester for stock purchases
+            requestedByUid: req.user.uid,
+            requestedByName: req.user.name,
+            requestedByEmail: req.user.email,
+            requestedByRole: 'it',
+
+            // IT has already reviewed (since IT is creating it)
+            availability: 'need_purchase',
+            itReviewedBy: req.user.uid,
+            itReviewedByName: req.user.name,
+            itReviewedAt: admin.firestore.FieldValue.serverTimestamp(),
+            itNotes: 'Stock purchase request by IT department',
+            itEstimatedCost: estimatedCost ? parseFloat(estimatedCost) : null,
+            itVendor: vendor || null,
+
+            // Quotation
+            quotationUrl: quotationUrl || null,
+            quotationFileName: quotationFileName || null,
+
+            // Goes directly to HR
+            status: 'pending_hr',
+
+            // HR Cost Approval
+            hrReviewedBy: null, hrReviewedByName: null, hrReviewedAt: null,
+            hrNotes: null, estimatedCost: estimatedCost ? parseFloat(estimatedCost) : null,
+            currency: currency || 'USD', vendor: vendor || null,
+
+            // COO / Director Approval
+            cooApprovedBy: null, cooApprovedByName: null, cooApprovedAt: null,
+            cooNotes: null, cooDecision: null,
+            directorApprovedBy: null, directorApprovedByName: null, directorApprovedAt: null,
+            directorNotes: null, directorDecision: null,
+
+            resolution: null, resolvedAt: null,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+
+        const docRef = await db.collection('it_tickets').add(ticketData);
+
+        res.json({
+            success: true,
+            data: { id: docRef.id, ...ticketData },
+            message: `Stock purchase request ${ticketData.ticketNumber} created and sent to HR`
+        });
+    } catch (error) {
+        console.error('Error creating stock purchase request:', error);
+        res.status(500).json({ success: false, error: 'Failed to create stock purchase request' });
+    }
+});
+
+// ============================================
+// PUT /api/it-tickets/update/:id
 // General update (IT team manages status, resolve, close)
 // ============================================
 router.put('/update/:id', verifyToken, async (req, res) => {
@@ -606,6 +695,7 @@ router.get('/dashboard', verifyToken, async (req, res) => {
         const rejectedTickets = tickets.filter(t => t.status === 'rejected').length;
         const availableInStore = tickets.filter(t => t.status === 'available_in_store').length;
         const needPurchase = tickets.filter(t => t.availability === 'need_purchase').length;
+        const stockPurchaseRequests = tickets.filter(t => t.ticketType === 'stock_purchase').length;
 
         // Priority breakdown (active only)
         const activeStatuses = ['open', 'in_progress', 'pending_hr', 'pending_coo', 'pending_director', 'available_in_store'];
@@ -684,7 +774,7 @@ router.get('/dashboard', verifyToken, async (req, res) => {
                 summary: {
                     totalTickets, openTickets, inProgressTickets, closedTickets, onHoldTickets,
                     pendingHR, pendingCOO, pendingDirector, approvedTickets, rejectedTickets,
-                    availableInStore, needPurchase, avgResolutionHours, totalProcurementCost
+                    availableInStore, needPurchase, stockPurchaseRequests, avgResolutionHours, totalProcurementCost
                 },
                 priority: { critical: criticalPriority, high: highPriority, medium: mediumPriority, low: lowPriority },
                 categoryStats,
