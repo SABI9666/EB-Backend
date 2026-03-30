@@ -1,8 +1,8 @@
 // api/it-tickets.js - IT Support Ticket Management System
-// Handles IT requests (computer, software, hardware, network, etc.) and IT dashboard
+// Full Procurement Workflow: User Request → IT Review (Store Check) → HR Cost Approval → COO Approval → Director Final Approval
 const express = require('express');
 const router = express.Router();
-const { verifyToken, requireRole } = require('../middleware/auth');
+const { verifyToken } = require('../middleware/auth');
 const admin = require('./_firebase-admin');
 const db = admin.firestore();
 
@@ -37,8 +37,26 @@ const IT_CATEGORIES = {
 };
 
 // ============================================
+// PROCUREMENT WORKFLOW STATUSES
+// ============================================
+// open               → User submitted, waiting for IT review
+// available_in_store → IT confirmed item is in store, will be issued
+// need_purchase      → IT marked for purchase, sent to HR
+// pending_hr         → HR reviewing, adding cost details
+// pending_coo        → COO approval pending
+// coo_approved       → COO approved, sent to Director
+// pending_director   → Director final approval pending
+// approved           → Director approved (procurement can proceed)
+// rejected           → Rejected at any stage
+// in_progress        → IT is working on it (for non-procurement tickets)
+// on_hold            → Ticket on hold
+// issued             → Item issued from store
+// delivered          → Purchased item delivered
+// closed             → Ticket closed/completed
+// resolved           → Ticket resolved
+
+// ============================================
 // GET /api/it-tickets/categories
-// Public categories list for request forms
 // ============================================
 router.get('/categories', verifyToken, async (req, res) => {
     try {
@@ -55,7 +73,7 @@ router.get('/categories', verifyToken, async (req, res) => {
 // ============================================
 router.post('/submit', verifyToken, async (req, res) => {
     try {
-        const { category, item, priority, subject, description, attachmentUrl } = req.body;
+        const { category, item, priority, subject, description, quantity } = req.body;
 
         if (!category || !item || !subject || !description) {
             return res.status(400).json({
@@ -65,15 +83,14 @@ router.post('/submit', verifyToken, async (req, res) => {
         }
 
         const ticketData = {
-            // Ticket info
             ticketNumber: `IT-${Date.now().toString(36).toUpperCase()}`,
             category,
             categoryLabel: IT_CATEGORIES[category]?.label || category,
             item,
+            quantity: parseInt(quantity) || 1,
             priority: priority || 'medium',
             subject,
             description,
-            attachmentUrl: attachmentUrl || null,
 
             // Requester info
             requestedByUid: req.user.uid,
@@ -81,14 +98,43 @@ router.post('/submit', verifyToken, async (req, res) => {
             requestedByEmail: req.user.email,
             requestedByRole: req.user.role,
 
-            // Status tracking
+            // Status & workflow tracking
             status: 'open',
-            assignedTo: null,
-            assignedToName: null,
+
+            // IT Review
+            itReviewedBy: null,
+            itReviewedByName: null,
+            itReviewedAt: null,
+            itNotes: null,
+            availability: null, // 'in_store' or 'need_purchase'
+
+            // HR Cost Approval
+            hrReviewedBy: null,
+            hrReviewedByName: null,
+            hrReviewedAt: null,
+            hrNotes: null,
+            estimatedCost: null,
+            currency: 'USD',
+            vendor: null,
+
+            // COO Approval
+            cooApprovedBy: null,
+            cooApprovedByName: null,
+            cooApprovedAt: null,
+            cooNotes: null,
+            cooDecision: null,
+
+            // Director Approval
+            directorApprovedBy: null,
+            directorApprovedByName: null,
+            directorApprovedAt: null,
+            directorNotes: null,
+            directorDecision: null,
+
+            // Resolution
             resolution: null,
             resolvedAt: null,
 
-            // Timestamps
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
         };
@@ -131,25 +177,20 @@ router.get('/my-requests', verifyToken, async (req, res) => {
 
 // ============================================
 // GET /api/it-tickets/all
-// IT team, COO, Director can view all tickets
+// IT, HR, COO, Director can view all tickets
 // ============================================
 router.get('/all', verifyToken, async (req, res) => {
     try {
-        const allowedRoles = ['it', 'coo', 'director'];
+        const allowedRoles = ['it', 'hr', 'coo', 'director'];
         if (!allowedRoles.includes(req.user.role)) {
             return res.status(403).json({ success: false, error: 'Insufficient permissions' });
         }
 
-        const { status, category, priority, limit: queryLimit } = req.query;
-
         let query = db.collection('it_tickets').orderBy('createdAt', 'desc');
 
+        const { status } = req.query;
         if (status) {
             query = query.where('status', '==', status);
-        }
-
-        if (queryLimit) {
-            query = query.limit(parseInt(queryLimit));
         }
 
         const snapshot = await query.get();
@@ -157,14 +198,6 @@ router.get('/all', verifyToken, async (req, res) => {
         snapshot.forEach(doc => {
             tickets.push({ id: doc.id, ...doc.data() });
         });
-
-        // Client-side filtering for additional fields (Firestore limitation on multiple where clauses)
-        if (category) {
-            tickets = tickets.filter(t => t.category === category);
-        }
-        if (priority) {
-            tickets = tickets.filter(t => t.priority === priority);
-        }
 
         res.json({ success: true, data: tickets });
     } catch (error) {
@@ -174,8 +207,335 @@ router.get('/all', verifyToken, async (req, res) => {
 });
 
 // ============================================
+// GET /api/it-tickets/pending-hr
+// HR sees tickets that need cost review
+// ============================================
+router.get('/pending-hr', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'hr' && req.user.role !== 'coo' && req.user.role !== 'director') {
+            return res.status(403).json({ success: false, error: 'Insufficient permissions' });
+        }
+
+        const snapshot = await db.collection('it_tickets')
+            .where('status', '==', 'pending_hr')
+            .orderBy('createdAt', 'desc')
+            .get();
+
+        const tickets = [];
+        snapshot.forEach(doc => {
+            tickets.push({ id: doc.id, ...doc.data() });
+        });
+
+        res.json({ success: true, data: tickets });
+    } catch (error) {
+        console.error('Error fetching HR pending tickets:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch pending tickets' });
+    }
+});
+
+// ============================================
+// GET /api/it-tickets/pending-coo
+// COO sees tickets pending approval
+// ============================================
+router.get('/pending-coo', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'coo' && req.user.role !== 'director') {
+            return res.status(403).json({ success: false, error: 'Insufficient permissions' });
+        }
+
+        const snapshot = await db.collection('it_tickets')
+            .where('status', '==', 'pending_coo')
+            .orderBy('createdAt', 'desc')
+            .get();
+
+        const tickets = [];
+        snapshot.forEach(doc => {
+            tickets.push({ id: doc.id, ...doc.data() });
+        });
+
+        res.json({ success: true, data: tickets });
+    } catch (error) {
+        console.error('Error fetching COO pending tickets:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch pending tickets' });
+    }
+});
+
+// ============================================
+// GET /api/it-tickets/pending-director
+// Director sees tickets pending final approval
+// ============================================
+router.get('/pending-director', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'director') {
+            return res.status(403).json({ success: false, error: 'Insufficient permissions' });
+        }
+
+        const snapshot = await db.collection('it_tickets')
+            .where('status', '==', 'pending_director')
+            .orderBy('createdAt', 'desc')
+            .get();
+
+        const tickets = [];
+        snapshot.forEach(doc => {
+            tickets.push({ id: doc.id, ...doc.data() });
+        });
+
+        res.json({ success: true, data: tickets });
+    } catch (error) {
+        console.error('Error fetching Director pending tickets:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch pending tickets' });
+    }
+});
+
+// ============================================
+// PUT /api/it-tickets/it-review/:id
+// IT checks store availability and processes ticket
+// ============================================
+router.put('/it-review/:id', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'it') {
+            return res.status(403).json({ success: false, error: 'Only IT team can review tickets' });
+        }
+
+        const { id } = req.params;
+        const { availability, itNotes } = req.body;
+        // availability: 'in_store' or 'need_purchase'
+
+        if (!availability || !['in_store', 'need_purchase'].includes(availability)) {
+            return res.status(400).json({ success: false, error: 'Availability must be in_store or need_purchase' });
+        }
+
+        const ticketRef = db.collection('it_tickets').doc(id);
+        const ticketDoc = await ticketRef.get();
+        if (!ticketDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Ticket not found' });
+        }
+
+        const updateData = {
+            availability,
+            itReviewedBy: req.user.uid,
+            itReviewedByName: req.user.name,
+            itReviewedAt: admin.firestore.FieldValue.serverTimestamp(),
+            itNotes: itNotes || null,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+
+        if (availability === 'in_store') {
+            // Available in store - IT will issue directly
+            updateData.status = 'available_in_store';
+        } else {
+            // Need to purchase - send to HR for cost approval
+            updateData.status = 'pending_hr';
+        }
+
+        await ticketRef.update(updateData);
+
+        const updated = await ticketRef.get();
+        res.json({
+            success: true,
+            data: { id: updated.id, ...updated.data() },
+            message: availability === 'in_store'
+                ? 'Item marked as available in store'
+                : 'Ticket sent to HR for cost approval'
+        });
+    } catch (error) {
+        console.error('Error in IT review:', error);
+        res.status(500).json({ success: false, error: 'Failed to process IT review' });
+    }
+});
+
+// ============================================
+// PUT /api/it-tickets/it-issue/:id
+// IT marks item as issued from store
+// ============================================
+router.put('/it-issue/:id', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'it') {
+            return res.status(403).json({ success: false, error: 'Only IT team can issue items' });
+        }
+
+        const { id } = req.params;
+        const { resolution } = req.body;
+
+        const ticketRef = db.collection('it_tickets').doc(id);
+        const ticketDoc = await ticketRef.get();
+        if (!ticketDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Ticket not found' });
+        }
+
+        await ticketRef.update({
+            status: 'issued',
+            resolution: resolution || 'Item issued from store',
+            resolvedAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        const updated = await ticketRef.get();
+        res.json({ success: true, data: { id: updated.id, ...updated.data() }, message: 'Item issued successfully' });
+    } catch (error) {
+        console.error('Error issuing item:', error);
+        res.status(500).json({ success: false, error: 'Failed to issue item' });
+    }
+});
+
+// ============================================
+// PUT /api/it-tickets/hr-review/:id
+// HR adds cost details and sends to COO
+// ============================================
+router.put('/hr-review/:id', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'hr') {
+            return res.status(403).json({ success: false, error: 'Only HR can add cost details' });
+        }
+
+        const { id } = req.params;
+        const { estimatedCost, currency, vendor, hrNotes } = req.body;
+
+        if (!estimatedCost) {
+            return res.status(400).json({ success: false, error: 'Estimated cost is required' });
+        }
+
+        const ticketRef = db.collection('it_tickets').doc(id);
+        const ticketDoc = await ticketRef.get();
+        if (!ticketDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Ticket not found' });
+        }
+
+        await ticketRef.update({
+            status: 'pending_coo',
+            estimatedCost: parseFloat(estimatedCost),
+            currency: currency || 'USD',
+            vendor: vendor || null,
+            hrReviewedBy: req.user.uid,
+            hrReviewedByName: req.user.name,
+            hrReviewedAt: admin.firestore.FieldValue.serverTimestamp(),
+            hrNotes: hrNotes || null,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        const updated = await ticketRef.get();
+        res.json({
+            success: true,
+            data: { id: updated.id, ...updated.data() },
+            message: 'Cost details added, sent to COO for approval'
+        });
+    } catch (error) {
+        console.error('Error in HR review:', error);
+        res.status(500).json({ success: false, error: 'Failed to process HR review' });
+    }
+});
+
+// ============================================
+// PUT /api/it-tickets/coo-approve/:id
+// COO approves/rejects and sends to Director
+// ============================================
+router.put('/coo-approve/:id', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'coo') {
+            return res.status(403).json({ success: false, error: 'Only COO can approve at this stage' });
+        }
+
+        const { id } = req.params;
+        const { decision, cooNotes } = req.body;
+
+        if (!decision || !['approved', 'rejected'].includes(decision)) {
+            return res.status(400).json({ success: false, error: 'Decision must be approved or rejected' });
+        }
+
+        const ticketRef = db.collection('it_tickets').doc(id);
+        const ticketDoc = await ticketRef.get();
+        if (!ticketDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Ticket not found' });
+        }
+
+        const updateData = {
+            cooDecision: decision,
+            cooApprovedBy: req.user.uid,
+            cooApprovedByName: req.user.name,
+            cooApprovedAt: admin.firestore.FieldValue.serverTimestamp(),
+            cooNotes: cooNotes || null,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+
+        if (decision === 'approved') {
+            updateData.status = 'pending_director';
+        } else {
+            updateData.status = 'rejected';
+            updateData.rejectedAt = admin.firestore.FieldValue.serverTimestamp();
+            updateData.rejectedBy = 'coo';
+        }
+
+        await ticketRef.update(updateData);
+
+        const updated = await ticketRef.get();
+        res.json({
+            success: true,
+            data: { id: updated.id, ...updated.data() },
+            message: decision === 'approved' ? 'Approved by COO, sent to Director' : 'Rejected by COO'
+        });
+    } catch (error) {
+        console.error('Error in COO approval:', error);
+        res.status(500).json({ success: false, error: 'Failed to process COO approval' });
+    }
+});
+
+// ============================================
+// PUT /api/it-tickets/director-approve/:id
+// Director final approval/rejection
+// ============================================
+router.put('/director-approve/:id', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'director') {
+            return res.status(403).json({ success: false, error: 'Only Director can give final approval' });
+        }
+
+        const { id } = req.params;
+        const { decision, directorNotes } = req.body;
+
+        if (!decision || !['approved', 'rejected'].includes(decision)) {
+            return res.status(400).json({ success: false, error: 'Decision must be approved or rejected' });
+        }
+
+        const ticketRef = db.collection('it_tickets').doc(id);
+        const ticketDoc = await ticketRef.get();
+        if (!ticketDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Ticket not found' });
+        }
+
+        const updateData = {
+            directorDecision: decision,
+            directorApprovedBy: req.user.uid,
+            directorApprovedByName: req.user.name,
+            directorApprovedAt: admin.firestore.FieldValue.serverTimestamp(),
+            directorNotes: directorNotes || null,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+
+        if (decision === 'approved') {
+            updateData.status = 'approved';
+        } else {
+            updateData.status = 'rejected';
+            updateData.rejectedAt = admin.firestore.FieldValue.serverTimestamp();
+            updateData.rejectedBy = 'director';
+        }
+
+        await ticketRef.update(updateData);
+
+        const updated = await ticketRef.get();
+        res.json({
+            success: true,
+            data: { id: updated.id, ...updated.data() },
+            message: decision === 'approved' ? 'Final approval granted by Director' : 'Rejected by Director'
+        });
+    } catch (error) {
+        console.error('Error in Director approval:', error);
+        res.status(500).json({ success: false, error: 'Failed to process Director approval' });
+    }
+});
+
+// ============================================
 // PUT /api/it-tickets/update/:id
-// IT team can update ticket status, assign, resolve
+// General update (IT team manages status, resolve, close)
 // ============================================
 router.put('/update/:id', verifyToken, async (req, res) => {
     try {
@@ -185,11 +545,10 @@ router.put('/update/:id', verifyToken, async (req, res) => {
         }
 
         const { id } = req.params;
-        const { status, assignedTo, assignedToName, resolution, notes } = req.body;
+        const { status, resolution, notes } = req.body;
 
         const ticketRef = db.collection('it_tickets').doc(id);
         const ticketDoc = await ticketRef.get();
-
         if (!ticketDoc.exists) {
             return res.status(404).json({ success: false, error: 'Ticket not found' });
         }
@@ -201,26 +560,17 @@ router.put('/update/:id', verifyToken, async (req, res) => {
         };
 
         if (status) updateData.status = status;
-        if (assignedTo !== undefined) updateData.assignedTo = assignedTo;
-        if (assignedToName !== undefined) updateData.assignedToName = assignedToName;
         if (resolution) updateData.resolution = resolution;
         if (notes) updateData.notes = notes;
 
-        // Set resolved timestamp when closing
-        if (status === 'closed' || status === 'resolved') {
+        if (status === 'closed' || status === 'resolved' || status === 'delivered') {
             updateData.resolvedAt = admin.firestore.FieldValue.serverTimestamp();
-            updateData.resolvedByUid = req.user.uid;
-            updateData.resolvedByName = req.user.name;
         }
 
         await ticketRef.update(updateData);
 
         const updated = await ticketRef.get();
-        res.json({
-            success: true,
-            data: { id: updated.id, ...updated.data() },
-            message: 'Ticket updated successfully'
-        });
+        res.json({ success: true, data: { id: updated.id, ...updated.data() }, message: 'Ticket updated successfully' });
     } catch (error) {
         console.error('Error updating IT ticket:', error);
         res.status(500).json({ success: false, error: 'Failed to update ticket' });
@@ -229,34 +579,40 @@ router.put('/update/:id', verifyToken, async (req, res) => {
 
 // ============================================
 // GET /api/it-tickets/dashboard
-// IT dashboard statistics for IT team, COO, Director
+// IT dashboard statistics
 // ============================================
 router.get('/dashboard', verifyToken, async (req, res) => {
     try {
-        const allowedRoles = ['it', 'coo', 'director'];
+        const allowedRoles = ['it', 'hr', 'coo', 'director'];
         if (!allowedRoles.includes(req.user.role)) {
             return res.status(403).json({ success: false, error: 'Insufficient permissions' });
         }
 
-        // Get all tickets
         const snapshot = await db.collection('it_tickets').get();
         const tickets = [];
         snapshot.forEach(doc => {
             tickets.push({ id: doc.id, ...doc.data() });
         });
 
-        // Basic stats
         const totalTickets = tickets.length;
         const openTickets = tickets.filter(t => t.status === 'open').length;
         const inProgressTickets = tickets.filter(t => t.status === 'in_progress').length;
-        const closedTickets = tickets.filter(t => t.status === 'closed' || t.status === 'resolved').length;
+        const closedTickets = tickets.filter(t => ['closed', 'resolved', 'issued', 'delivered'].includes(t.status)).length;
         const onHoldTickets = tickets.filter(t => t.status === 'on_hold').length;
+        const pendingHR = tickets.filter(t => t.status === 'pending_hr').length;
+        const pendingCOO = tickets.filter(t => t.status === 'pending_coo').length;
+        const pendingDirector = tickets.filter(t => t.status === 'pending_director').length;
+        const approvedTickets = tickets.filter(t => t.status === 'approved').length;
+        const rejectedTickets = tickets.filter(t => t.status === 'rejected').length;
+        const availableInStore = tickets.filter(t => t.status === 'available_in_store').length;
+        const needPurchase = tickets.filter(t => t.availability === 'need_purchase').length;
 
-        // Priority breakdown
-        const highPriority = tickets.filter(t => t.priority === 'high' && t.status !== 'closed' && t.status !== 'resolved').length;
-        const mediumPriority = tickets.filter(t => t.priority === 'medium' && t.status !== 'closed' && t.status !== 'resolved').length;
-        const lowPriority = tickets.filter(t => t.priority === 'low' && t.status !== 'closed' && t.status !== 'resolved').length;
-        const criticalPriority = tickets.filter(t => t.priority === 'critical' && t.status !== 'closed' && t.status !== 'resolved').length;
+        // Priority breakdown (active only)
+        const activeStatuses = ['open', 'in_progress', 'pending_hr', 'pending_coo', 'pending_director', 'available_in_store'];
+        const highPriority = tickets.filter(t => t.priority === 'high' && activeStatuses.includes(t.status)).length;
+        const mediumPriority = tickets.filter(t => t.priority === 'medium' && activeStatuses.includes(t.status)).length;
+        const lowPriority = tickets.filter(t => t.priority === 'low' && activeStatuses.includes(t.status)).length;
+        const criticalPriority = tickets.filter(t => t.priority === 'critical' && activeStatuses.includes(t.status)).length;
 
         // Category breakdown
         const categoryStats = {};
@@ -265,10 +621,10 @@ router.get('/dashboard', verifyToken, async (req, res) => {
                 categoryStats[t.category] = { total: 0, open: 0, closed: 0, label: t.categoryLabel || t.category };
             }
             categoryStats[t.category].total++;
-            if (t.status === 'open' || t.status === 'in_progress') {
-                categoryStats[t.category].open++;
-            } else {
+            if (['closed', 'resolved', 'issued', 'delivered'].includes(t.status)) {
                 categoryStats[t.category].closed++;
+            } else {
+                categoryStats[t.category].open++;
             }
         });
 
@@ -280,36 +636,23 @@ router.get('/dashboard', verifyToken, async (req, res) => {
             const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 0, 23, 59, 59);
             const monthName = monthDate.toLocaleString('default', { month: 'short', year: 'numeric' });
 
-            const monthTickets = tickets.filter(t => {
+            const monthCreated = tickets.filter(t => {
                 const created = t.createdAt?.toDate ? t.createdAt.toDate() : new Date(t.createdAt);
                 return created >= monthDate && created <= monthEnd;
-            });
+            }).length;
 
             const monthClosed = tickets.filter(t => {
                 if (!t.resolvedAt) return false;
                 const resolved = t.resolvedAt?.toDate ? t.resolvedAt.toDate() : new Date(t.resolvedAt);
                 return resolved >= monthDate && resolved <= monthEnd;
-            });
+            }).length;
 
-            monthlyStats.push({
-                month: monthName,
-                created: monthTickets.length,
-                closed: monthClosed.length
-            });
+            monthlyStats.push({ month: monthName, created: monthCreated, closed: monthClosed });
         }
 
-        // Recent tickets (last 10)
-        const recentTickets = tickets
-            .sort((a, b) => {
-                const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt);
-                const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt);
-                return dateB - dateA;
-            })
-            .slice(0, 10);
-
-        // Average resolution time (for closed tickets with resolvedAt)
+        // Avg resolution time
         const closedWithTime = tickets.filter(t =>
-            (t.status === 'closed' || t.status === 'resolved') && t.resolvedAt && t.createdAt
+            ['closed', 'resolved', 'issued', 'delivered'].includes(t.status) && t.resolvedAt && t.createdAt
         );
         let avgResolutionHours = 0;
         if (closedWithTime.length > 0) {
@@ -321,23 +664,29 @@ router.get('/dashboard', verifyToken, async (req, res) => {
             avgResolutionHours = Math.round(totalHours / closedWithTime.length);
         }
 
+        // Total procurement cost (approved)
+        const totalProcurementCost = tickets
+            .filter(t => t.estimatedCost && ['approved', 'delivered', 'closed'].includes(t.status))
+            .reduce((sum, t) => sum + (parseFloat(t.estimatedCost) || 0), 0);
+
+        // Recent tickets
+        const recentTickets = tickets
+            .sort((a, b) => {
+                const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt);
+                const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt);
+                return dateB - dateA;
+            })
+            .slice(0, 15);
+
         res.json({
             success: true,
             data: {
                 summary: {
-                    totalTickets,
-                    openTickets,
-                    inProgressTickets,
-                    closedTickets,
-                    onHoldTickets,
-                    avgResolutionHours
+                    totalTickets, openTickets, inProgressTickets, closedTickets, onHoldTickets,
+                    pendingHR, pendingCOO, pendingDirector, approvedTickets, rejectedTickets,
+                    availableInStore, needPurchase, avgResolutionHours, totalProcurementCost
                 },
-                priority: {
-                    critical: criticalPriority,
-                    high: highPriority,
-                    medium: mediumPriority,
-                    low: lowPriority
-                },
+                priority: { critical: criticalPriority, high: highPriority, medium: mediumPriority, low: lowPriority },
                 categoryStats,
                 monthlyStats,
                 recentTickets
@@ -351,7 +700,6 @@ router.get('/dashboard', verifyToken, async (req, res) => {
 
 // ============================================
 // DELETE /api/it-tickets/:id
-// IT team can delete tickets
 // ============================================
 router.delete('/:id', verifyToken, async (req, res) => {
     try {
@@ -362,7 +710,6 @@ router.delete('/:id', verifyToken, async (req, res) => {
         const { id } = req.params;
         const ticketRef = db.collection('it_tickets').doc(id);
         const ticketDoc = await ticketRef.get();
-
         if (!ticketDoc.exists) {
             return res.status(404).json({ success: false, error: 'Ticket not found' });
         }
