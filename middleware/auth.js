@@ -117,6 +117,7 @@ async function checkProjectAccess(req, res, next) {
             case 'coo':
             case 'director':
             case 'accounts':
+            case 'it':
                 // These roles can access all projects
                 break;
                 

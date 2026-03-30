@@ -187,6 +187,9 @@ try {
     console.log('  Loading screening...');
     const screeningHandler = require('./api/screening');
 
+    console.log('  Loading it-tickets...');
+    const itTicketsHandler = require('./api/it-tickets');
+
     console.log('  Loading migrate-user...');
     const migrateUserHandler = require('./api/migrate-user');
 
@@ -225,6 +228,7 @@ try {
     // NEW: Register screening route
     // ============================================
     app.use('/api/screening', screeningHandler);
+    app.use('/api/it-tickets', itTicketsHandler);
     app.use('/api/migrate-user', migrateUserHandler);
 
     console.log('✅ All routes registered');
@@ -280,7 +284,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('   *    /api/leave-requests');
     console.log('   *    /api/timesheets');
     console.log('   *    /api/time-requests');
-    console.log('   *    /api/screening  ← NEW');
+    console.log('   *    /api/screening');
+    console.log('   *    /api/it-tickets  ← NEW');
     console.log('');
 });
 
