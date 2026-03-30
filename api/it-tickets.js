@@ -73,7 +73,7 @@ router.get('/categories', verifyToken, async (req, res) => {
 // ============================================
 router.post('/submit', verifyToken, async (req, res) => {
     try {
-        const { category, item, priority, subject, description, quantity } = req.body;
+        const { category, item, priority, subject, description, quantity, attachments } = req.body;
 
         if (!category || !item || !subject || !description) {
             return res.status(400).json({
@@ -91,6 +91,7 @@ router.post('/submit', verifyToken, async (req, res) => {
             priority: priority || 'medium',
             subject,
             description,
+            attachments: attachments || [],
 
             // Requester info
             requestedByUid: req.user.uid,
@@ -160,7 +161,6 @@ router.get('/my-requests', verifyToken, async (req, res) => {
     try {
         const snapshot = await db.collection('it_tickets')
             .where('requestedByUid', '==', req.user.uid)
-            .orderBy('createdAt', 'desc')
             .get();
 
         const tickets = [];
@@ -186,7 +186,7 @@ router.get('/all', verifyToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'Insufficient permissions' });
         }
 
-        let query = db.collection('it_tickets').orderBy('createdAt', 'desc');
+        let query = db.collection('it_tickets');
 
         const { status } = req.query;
         if (status) {
@@ -197,6 +197,13 @@ router.get('/all', verifyToken, async (req, res) => {
         let tickets = [];
         snapshot.forEach(doc => {
             tickets.push({ id: doc.id, ...doc.data() });
+        });
+
+        // Sort client-side to avoid composite index requirement
+        tickets.sort((a, b) => {
+            const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+            const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+            return dateB - dateA;
         });
 
         res.json({ success: true, data: tickets });
@@ -218,7 +225,6 @@ router.get('/pending-hr', verifyToken, async (req, res) => {
 
         const snapshot = await db.collection('it_tickets')
             .where('status', '==', 'pending_hr')
-            .orderBy('createdAt', 'desc')
             .get();
 
         const tickets = [];
@@ -245,7 +251,6 @@ router.get('/pending-coo', verifyToken, async (req, res) => {
 
         const snapshot = await db.collection('it_tickets')
             .where('status', '==', 'pending_coo')
-            .orderBy('createdAt', 'desc')
             .get();
 
         const tickets = [];
@@ -272,7 +277,6 @@ router.get('/pending-director', verifyToken, async (req, res) => {
 
         const snapshot = await db.collection('it_tickets')
             .where('status', '==', 'pending_director')
-            .orderBy('createdAt', 'desc')
             .get();
 
         const tickets = [];
@@ -791,7 +795,83 @@ router.get('/dashboard', verifyToken, async (req, res) => {
 });
 
 // ============================================
+// PUT /api/it-tickets/user-edit/:id
+// User can edit their own ticket ONLY if status is 'open' (before IT reviews)
+// ============================================
+router.put('/user-edit/:id', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const ticketRef = db.collection('it_tickets').doc(id);
+        const ticketDoc = await ticketRef.get();
+        if (!ticketDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Ticket not found' });
+        }
+
+        const ticket = ticketDoc.data();
+
+        // Only owner can edit
+        if (ticket.requestedByUid !== req.user.uid && req.user.role !== 'it') {
+            return res.status(403).json({ success: false, error: 'You can only edit your own tickets' });
+        }
+
+        // Only editable when status is 'open'
+        if (ticket.status !== 'open') {
+            return res.status(400).json({ success: false, error: 'Ticket can only be edited before IT review' });
+        }
+
+        const { category, item, quantity, priority, subject, description } = req.body;
+        const updateData = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
+
+        if (category) { updateData.category = category; updateData.categoryLabel = IT_CATEGORIES[category]?.label || category; }
+        if (item) updateData.item = item;
+        if (quantity) updateData.quantity = parseInt(quantity);
+        if (priority) updateData.priority = priority;
+        if (subject) updateData.subject = subject;
+        if (description) updateData.description = description;
+
+        await ticketRef.update(updateData);
+        const updated = await ticketRef.get();
+        res.json({ success: true, data: { id: updated.id, ...updated.data() }, message: 'Ticket updated' });
+    } catch (error) {
+        console.error('Error editing ticket:', error);
+        res.status(500).json({ success: false, error: 'Failed to edit ticket' });
+    }
+});
+
+// ============================================
+// DELETE /api/it-tickets/user-delete/:id
+// User can delete their own ticket ONLY if status is 'open'
+// ============================================
+router.delete('/user-delete/:id', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const ticketRef = db.collection('it_tickets').doc(id);
+        const ticketDoc = await ticketRef.get();
+        if (!ticketDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Ticket not found' });
+        }
+
+        const ticket = ticketDoc.data();
+
+        if (ticket.requestedByUid !== req.user.uid && req.user.role !== 'it') {
+            return res.status(403).json({ success: false, error: 'You can only delete your own tickets' });
+        }
+
+        if (ticket.status !== 'open') {
+            return res.status(400).json({ success: false, error: 'Ticket can only be deleted before IT review' });
+        }
+
+        await ticketRef.delete();
+        res.json({ success: true, message: 'Ticket deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting ticket:', error);
+        res.status(500).json({ success: false, error: 'Failed to delete ticket' });
+    }
+});
+
+// ============================================
 // DELETE /api/it-tickets/:id
+// IT team or Director can delete any ticket
 // ============================================
 router.delete('/:id', verifyToken, async (req, res) => {
     try {
