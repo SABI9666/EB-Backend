@@ -760,7 +760,17 @@ router.get('/dashboard', verifyToken, async (req, res) => {
             avgResolutionHours = Math.round(totalHours / closedWithTime.length);
         }
 
-        // Total procurement cost (approved)
+        // Procurement cost grouped by currency
+        const procurementByCurrency = {};
+        tickets
+            .filter(t => t.estimatedCost && ['approved', 'delivered', 'closed', 'pending_coo', 'pending_director'].includes(t.status))
+            .forEach(t => {
+                const cur = t.currency || 'USD';
+                if (!procurementByCurrency[cur]) procurementByCurrency[cur] = { total: 0, count: 0 };
+                procurementByCurrency[cur].total += parseFloat(t.estimatedCost) || 0;
+                procurementByCurrency[cur].count++;
+            });
+
         const totalProcurementCost = tickets
             .filter(t => t.estimatedCost && ['approved', 'delivered', 'closed'].includes(t.status))
             .reduce((sum, t) => sum + (parseFloat(t.estimatedCost) || 0), 0);
@@ -780,7 +790,8 @@ router.get('/dashboard', verifyToken, async (req, res) => {
                 summary: {
                     totalTickets, openTickets, inProgressTickets, closedTickets, onHoldTickets,
                     pendingHR, pendingCOO, pendingDirector, approvedTickets, rejectedTickets,
-                    availableInStore, needPurchase, stockPurchaseRequests, avgResolutionHours, totalProcurementCost
+                    availableInStore, needPurchase, stockPurchaseRequests, avgResolutionHours,
+                    totalProcurementCost, procurementByCurrency
                 },
                 priority: { critical: criticalPriority, high: highPriority, medium: mediumPriority, low: lowPriority },
                 categoryStats,
