@@ -161,7 +161,6 @@ router.get('/my-requests', verifyToken, async (req, res) => {
     try {
         const snapshot = await db.collection('it_tickets')
             .where('requestedByUid', '==', req.user.uid)
-            .orderBy('createdAt', 'desc')
             .get();
 
         const tickets = [];
@@ -187,7 +186,7 @@ router.get('/all', verifyToken, async (req, res) => {
             return res.status(403).json({ success: false, error: 'Insufficient permissions' });
         }
 
-        let query = db.collection('it_tickets').orderBy('createdAt', 'desc');
+        let query = db.collection('it_tickets');
 
         const { status } = req.query;
         if (status) {
@@ -198,6 +197,13 @@ router.get('/all', verifyToken, async (req, res) => {
         let tickets = [];
         snapshot.forEach(doc => {
             tickets.push({ id: doc.id, ...doc.data() });
+        });
+
+        // Sort client-side to avoid composite index requirement
+        tickets.sort((a, b) => {
+            const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || 0);
+            const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || 0);
+            return dateB - dateA;
         });
 
         res.json({ success: true, data: tickets });
@@ -219,7 +225,6 @@ router.get('/pending-hr', verifyToken, async (req, res) => {
 
         const snapshot = await db.collection('it_tickets')
             .where('status', '==', 'pending_hr')
-            .orderBy('createdAt', 'desc')
             .get();
 
         const tickets = [];
@@ -246,7 +251,6 @@ router.get('/pending-coo', verifyToken, async (req, res) => {
 
         const snapshot = await db.collection('it_tickets')
             .where('status', '==', 'pending_coo')
-            .orderBy('createdAt', 'desc')
             .get();
 
         const tickets = [];
@@ -273,7 +277,6 @@ router.get('/pending-director', verifyToken, async (req, res) => {
 
         const snapshot = await db.collection('it_tickets')
             .where('status', '==', 'pending_director')
-            .orderBy('createdAt', 'desc')
             .get();
 
         const tickets = [];
