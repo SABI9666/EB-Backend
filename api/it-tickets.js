@@ -320,9 +320,10 @@ router.put('/it-review/:id', verifyToken, async (req, res) => {
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
         };
 
-        // Attach quotation if provided (for purchase requests)
+        // Attach quotation(s) if provided (for purchase requests)
         if (quotationUrl) updateData.quotationUrl = quotationUrl;
         if (quotationFileName) updateData.quotationFileName = quotationFileName;
+        if (req.body.quotations) updateData.quotations = req.body.quotations;
         if (estimatedCost) updateData.itEstimatedCost = parseFloat(estimatedCost);
         if (vendor) updateData.itVendor = vendor;
 
@@ -551,7 +552,7 @@ router.post('/stock-purchase', verifyToken, async (req, res) => {
         }
 
         const { category, item, quantity, subject, description, vendor,
-                estimatedCost, currency, quotationUrl, quotationFileName } = req.body;
+                estimatedCost, currency, quotationUrl, quotationFileName, quotations } = req.body;
 
         if (!item || !subject || !description) {
             return res.status(400).json({
@@ -589,6 +590,7 @@ router.post('/stock-purchase', verifyToken, async (req, res) => {
             // Quotation
             quotationUrl: quotationUrl || null,
             quotationFileName: quotationFileName || null,
+            quotations: quotations || [],
 
             // Goes directly to HR
             status: 'pending_hr',
