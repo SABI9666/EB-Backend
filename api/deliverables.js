@@ -175,7 +175,31 @@ const handler = async (req, res) => {
                     
                     const docRef = await db.collection('deliverables').add(deliverableData);
                     uploadedLinks.push({ id: docRef.id, ...deliverableData });
-                    
+
+                    // Also create a designFiles record for the DC workflow pipeline
+                    await db.collection('designFiles').add({
+                        projectId,
+                        projectName: project.projectName,
+                        projectCode: project.projectCode || 'N/A',
+                        clientCompany: project.clientCompany || 'N/A',
+                        fileName: link.title || link.url,
+                        fileUrl: link.url,
+                        fileSize: 0,
+                        uploadType: 'link',
+                        isExternalLink: true,
+                        clientEmail: '',
+                        clientName: '',
+                        uploadedByUid: req.user.uid,
+                        uploadedByName: req.user.name,
+                        uploadedByEmail: req.user.email || '',
+                        status: 'uploaded',
+                        designerNotes: uploadNotes || link.description || '',
+                        deliverableId: docRef.id,
+                        uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+
                     // Log activity
                     await db.collection('activities').add({
                         type: 'deliverable_uploaded',
@@ -318,6 +342,30 @@ const handler = async (req, res) => {
 
                                 const docRef = await db.collection('deliverables').add(deliverableData);
                                 uploadedFiles.push({ id: docRef.id, ...deliverableData });
+
+                                // Also create a designFiles record for the DC workflow pipeline
+                                await db.collection('designFiles').add({
+                                    projectId,
+                                    projectName: project.projectName,
+                                    projectCode: project.projectCode || 'N/A',
+                                    clientCompany: project.clientCompany || 'N/A',
+                                    fileName: file.originalname,
+                                    fileUrl: publicUrl,
+                                    fileSize: file.size,
+                                    uploadType: 'file',
+                                    isExternalLink: false,
+                                    clientEmail: '',
+                                    clientName: '',
+                                    uploadedByUid: req.user.uid,
+                                    uploadedByName: req.user.name,
+                                    uploadedByEmail: req.user.email || '',
+                                    status: 'uploaded',
+                                    designerNotes: uploadNotes || description || '',
+                                    deliverableId: docRef.id,
+                                    uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+                                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                                });
 
                                 // Log activity
                                 await db.collection('activities').add({
