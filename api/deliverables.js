@@ -216,8 +216,8 @@ const handler = async (req, res) => {
                     await db.collection('activities').add({
                         type: 'deliverable_uploaded',
                         details: `Designer uploaded link: ${link.title || link.url}`,
-                        performedByName: req.user.name,
-                        performedByRole: req.user.role,
+                        performedByName: req.user.name || '',
+                        performedByRole: req.user.role || '',
                         performedByUid: req.user.uid,
                         timestamp: admin.firestore.FieldValue.serverTimestamp(),
                         projectId: projectId,
@@ -397,8 +397,8 @@ const handler = async (req, res) => {
                                 await db.collection('activities').add({
                                     type: 'deliverable_uploaded',
                                     details: `Designer uploaded file: ${file.originalname}`,
-                                    performedByName: req.user.name,
-                                    performedByRole: req.user.role,
+                                    performedByName: req.user.name || '',
+                                    performedByRole: req.user.role || '',
                                     performedByUid: req.user.uid,
                                     timestamp: admin.firestore.FieldValue.serverTimestamp(),
                                     projectId: projectId,
@@ -443,7 +443,7 @@ const handler = async (req, res) => {
                             await db.collection('notifications').add({
                                 type: 'design_file_approval_pending',
                                 recipientRole: 'coo',
-                                message: `${uploadedFiles.length} design file(s) pending your approval for ${project.projectName || 'project'} by ${req.user.name || 'designer'}`,
+                                message: `${uploadedFiles.length} design file(s) pending approval for ${project.projectName || 'project'} by ${req.user.name || 'Designer'}`,
                                 projectId: projectId,
                                 priority: 'high',
                                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -454,7 +454,7 @@ const handler = async (req, res) => {
                             await db.collection('notifications').add({
                                 type: 'design_file_approval_pending',
                                 recipientRole: 'director',
-                                message: `${uploadedFiles.length} design file(s) pending approval for ${project.projectName || 'project'} by ${req.user.name || 'designer'}`,
+                                message: `${uploadedFiles.length} design file(s) pending approval for ${project.projectName || 'project'} by ${req.user.name || 'Designer'}`,
                                 projectId: projectId,
                                 priority: 'normal',
                                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
