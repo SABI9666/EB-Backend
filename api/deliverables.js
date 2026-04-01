@@ -112,7 +112,7 @@ const handler = async (req, res) => {
                     });
                 });
                 
-                const { projectId, taskId, links, uploadNotes, versionNumber, status } = req.body;
+                const { projectId, taskId, links, uploadNotes, versionNumber, status, submissionStage, revisionNumber } = req.body;
                 
                 // Verify user is assigned to this project
                 const projectDoc = await db.collection('projects').doc(projectId).get();
@@ -200,6 +200,8 @@ const handler = async (req, res) => {
                         uploadedByName: req.user.name || '',
                         uploadedByEmail: req.user.email || '',
                         status: 'pending_approval',
+                        submissionStage: submissionStage || 'IFA',
+                        revisionNumber: revisionNumber || 'Rev-0',
                         designerNotes: uploadNotes || link.description || '',
                         deliverableId: docRef.id,
                         submittedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -214,8 +216,8 @@ const handler = async (req, res) => {
                     await db.collection('activities').add({
                         type: 'deliverable_uploaded',
                         details: `Designer uploaded link: ${link.title || link.url}`,
-                        performedByName: req.user.name,
-                        performedByRole: req.user.role,
+                        performedByName: req.user.name || '',
+                        performedByRole: req.user.role || '',
                         performedByUid: req.user.uid,
                         timestamp: admin.firestore.FieldValue.serverTimestamp(),
                         projectId: projectId,
@@ -271,7 +273,7 @@ const handler = async (req, res) => {
                                 });
                             }
 
-                            const { projectId, taskId, uploadNotes, versionNumber, description, status } = req.body;
+                            const { projectId, taskId, uploadNotes, versionNumber, description, status, submissionStage, revisionNumber } = req.body;
                             
                             // Verify project exists and user has access
                             const projectDoc = await db.collection('projects').doc(projectId).get();
@@ -379,6 +381,8 @@ const handler = async (req, res) => {
                                     uploadedByName: req.user.name || '',
                                     uploadedByEmail: req.user.email || '',
                                     status: 'pending_approval',
+                                    submissionStage: submissionStage || 'IFA',
+                                    revisionNumber: revisionNumber || 'Rev-0',
                                     designerNotes: uploadNotes || description || '',
                                     deliverableId: docRef.id,
                                     submittedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -393,8 +397,8 @@ const handler = async (req, res) => {
                                 await db.collection('activities').add({
                                     type: 'deliverable_uploaded',
                                     details: `Designer uploaded file: ${file.originalname}`,
-                                    performedByName: req.user.name,
-                                    performedByRole: req.user.role,
+                                    performedByName: req.user.name || '',
+                                    performedByRole: req.user.role || '',
                                     performedByUid: req.user.uid,
                                     timestamp: admin.firestore.FieldValue.serverTimestamp(),
                                     projectId: projectId,
@@ -439,7 +443,7 @@ const handler = async (req, res) => {
                             await db.collection('notifications').add({
                                 type: 'design_file_approval_pending',
                                 recipientRole: 'coo',
-                                message: `${uploadedFiles.length} design file(s) pending your approval for ${project.projectName || 'project'} by ${req.user.name || 'designer'}`,
+                                message: `${uploadedFiles.length} design file(s) pending approval for ${project.projectName || 'project'} by ${req.user.name || 'Designer'}`,
                                 projectId: projectId,
                                 priority: 'high',
                                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -450,7 +454,7 @@ const handler = async (req, res) => {
                             await db.collection('notifications').add({
                                 type: 'design_file_approval_pending',
                                 recipientRole: 'director',
-                                message: `${uploadedFiles.length} design file(s) pending approval for ${project.projectName || 'project'} by ${req.user.name || 'designer'}`,
+                                message: `${uploadedFiles.length} design file(s) pending approval for ${project.projectName || 'project'} by ${req.user.name || 'Designer'}`,
                                 projectId: projectId,
                                 priority: 'normal',
                                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
