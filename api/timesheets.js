@@ -614,19 +614,53 @@ timesheetsRouter.post('/', async (req, res) => {
         }
 
         const projectData = projectDoc.data();
-        const totalHours = await getAggregatedProjectHours(projectId);
 
+        // Check if designer is assigned to this project
+        const assignedUids = projectData.assignedDesignerUids || projectData.assignedDesigners || [];
+        if (assignedUids.length > 0 && !assignedUids.includes(uid)) {
+            return res.status(403).json({ success: false, error: 'You are not assigned to this project.' });
+        }
+
+        // Per-designer hours cap: check designer's individual allocation first
+        const designerAllocatedHours = (projectData.designerHours && projectData.designerHours[uid])
+            ? parseFloat(projectData.designerHours[uid])
+            : null;
+
+        if (designerAllocatedHours !== null && designerAllocatedHours > 0) {
+            // Get this designer's logged hours for this project
+            const designerTimesheetsSnap = await db.collection('timesheets')
+                .where('projectId', '==', projectId)
+                .where('designerUid', '==', uid)
+                .get();
+            let designerLoggedHours = 0;
+            designerTimesheetsSnap.forEach(doc => { designerLoggedHours += doc.data().hours || 0; });
+
+            if (designerLoggedHours + Number(hours) > designerAllocatedHours) {
+                return res.status(200).json({
+                    success: false,
+                    exceedsAllocation: true,
+                    totalHours: designerLoggedHours,
+                    allocatedHours: designerAllocatedHours,
+                    exceededBy: (designerLoggedHours + Number(hours)) - designerAllocatedHours,
+                    message: `Your allocated ${designerAllocatedHours}h for this project would be exceeded.`
+                });
+            }
+        }
+
+        // Also check overall project budget ceiling
+        const totalHours = await getAggregatedProjectHours(projectId);
         const allocatedHours = projectData.maxAllocatedHours || 0;
         const additionalHours = projectData.additionalHours || 0;
         const totalAllocation = allocatedHours + additionalHours;
 
-        if (totalHours + hours > totalAllocation && totalAllocation > 0) {
+        if (totalHours + Number(hours) > totalAllocation && totalAllocation > 0) {
             return res.status(200).json({
                 success: false,
                 exceedsAllocation: true,
                 totalHours: totalHours,
                 allocatedHours: totalAllocation,
-                exceededBy: (totalHours + hours) - totalAllocation
+                exceededBy: (totalHours + Number(hours)) - totalAllocation,
+                message: `Project total budget of ${totalAllocation}h would be exceeded.`
             });
         }
 

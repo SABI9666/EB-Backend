@@ -94,15 +94,22 @@ async function checkProjectAccess(req, res, next) {
                 }
                 break;
                 
-            case 'design_lead':
+            case 'design_lead': {
                 // Design leads can only access projects assigned to them
-                if (project.designLeadUid !== req.user.uid) {
-                    return res.status(403).json({ 
-                        success: false, 
-                        error: 'This project is not assigned to you' 
+                // Check both new designLeads array and legacy designLeadUid
+                const isAssignedLead = (
+                    (project.designLeads && Array.isArray(project.designLeads) &&
+                        project.designLeads.some(l => l.uid === req.user.uid)) ||
+                    project.designLeadUid === req.user.uid
+                );
+                if (!isAssignedLead) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'This project is not assigned to you'
                     });
                 }
                 break;
+            }
                 
             case 'bdm':
                 // BDMs can only access their own projects
