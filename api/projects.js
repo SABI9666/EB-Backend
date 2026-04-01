@@ -331,6 +331,72 @@ const handler = async (req, res) => {
             }
 
             // ================================================
+            // GET Design Files Monthly Stats (COO/Director Dashboard)
+            // ================================================
+            if (action === 'get_design_file_stats') {
+                try {
+                    if (!['coo', 'director', 'design_lead'].includes(req.user.role)) {
+                        return res.status(403).json({ success: false, error: 'Access denied' });
+                    }
+
+                    const allFilesSnap = await db.collection('designFiles').get();
+                    const allFiles = allFilesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                    // Build monthly stats
+                    const monthlyStats = {};
+                    const stageStats = { IFA: 0, IFC: 0, Preliminary: 0, Draft: 0, Final: 0, Other: 0 };
+                    const statusStats = { uploaded: 0, pending_approval: 0, approved: 0, rejected: 0, sent: 0 };
+
+                    allFiles.forEach(f => {
+                        // Count by status
+                        if (statusStats[f.status] !== undefined) statusStats[f.status]++;
+
+                        // Count by stage
+                        const stage = f.submissionStage || 'Other';
+                        if (stageStats[stage] !== undefined) stageStats[stage]++;
+                        else stageStats['Other']++;
+
+                        // Monthly breakdown (by sentAt for sent files, else by createdAt)
+                        const ts = f.sentAt || f.createdAt;
+                        if (ts) {
+                            const ms = ts.seconds ? ts.seconds * 1000 : (typeof ts === 'number' ? ts : 0);
+                            if (ms) {
+                                const d = new Date(ms);
+                                const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                                if (!monthlyStats[key]) {
+                                    monthlyStats[key] = { month: key, total: 0, sent: 0, IFA: 0, IFC: 0, Preliminary: 0, Draft: 0, Final: 0, Other: 0 };
+                                }
+                                monthlyStats[key].total++;
+                                if (f.status === 'sent') monthlyStats[key].sent++;
+                                const s = f.submissionStage || 'Other';
+                                if (monthlyStats[key][s] !== undefined) monthlyStats[key][s]++;
+                                else monthlyStats[key]['Other']++;
+                            }
+                        }
+                    });
+
+                    // Sort monthly by date desc
+                    const monthlySorted = Object.values(monthlyStats).sort((a, b) => b.month.localeCompare(a.month));
+
+                    return res.status(200).json({
+                        success: true,
+                        totalFiles: allFiles.length,
+                        stageStats,
+                        statusStats,
+                        monthlyStats: monthlySorted,
+                        recentFiles: allFiles.sort((a, b) => {
+                            const da = a.createdAt?.seconds || 0;
+                            const db2 = b.createdAt?.seconds || 0;
+                            return db2 - da;
+                        }).slice(0, 20)
+                    });
+                } catch (err) {
+                    console.error('Error fetching design file stats:', err);
+                    return res.status(500).json({ success: false, error: err.message });
+                }
+            }
+
+            // ================================================
             // Generate Variation Code Logic
             // ================================================
             if (action === 'generate-variation-code') {

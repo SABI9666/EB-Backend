@@ -112,7 +112,7 @@ const handler = async (req, res) => {
                     });
                 });
                 
-                const { projectId, taskId, links, uploadNotes, versionNumber, status } = req.body;
+                const { projectId, taskId, links, uploadNotes, versionNumber, status, submissionStage, revisionNumber } = req.body;
                 
                 // Verify user is assigned to this project
                 const projectDoc = await db.collection('projects').doc(projectId).get();
@@ -200,6 +200,8 @@ const handler = async (req, res) => {
                         uploadedByName: req.user.name || '',
                         uploadedByEmail: req.user.email || '',
                         status: 'pending_approval',
+                        submissionStage: submissionStage || 'IFA',
+                        revisionNumber: revisionNumber || 'Rev-0',
                         designerNotes: uploadNotes || link.description || '',
                         deliverableId: docRef.id,
                         submittedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -271,7 +273,7 @@ const handler = async (req, res) => {
                                 });
                             }
 
-                            const { projectId, taskId, uploadNotes, versionNumber, description, status } = req.body;
+                            const { projectId, taskId, uploadNotes, versionNumber, description, status, submissionStage, revisionNumber } = req.body;
                             
                             // Verify project exists and user has access
                             const projectDoc = await db.collection('projects').doc(projectId).get();
@@ -379,6 +381,8 @@ const handler = async (req, res) => {
                                     uploadedByName: req.user.name || '',
                                     uploadedByEmail: req.user.email || '',
                                     status: 'pending_approval',
+                                    submissionStage: submissionStage || 'IFA',
+                                    revisionNumber: revisionNumber || 'Rev-0',
                                     designerNotes: uploadNotes || description || '',
                                     deliverableId: docRef.id,
                                     submittedAt: admin.firestore.FieldValue.serverTimestamp(),
