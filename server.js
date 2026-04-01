@@ -193,6 +193,9 @@ try {
     console.log('  Loading migrate-user...');
     const migrateUserHandler = require('./api/migrate-user');
 
+    console.log('  Loading forgot-password...');
+    const forgotPasswordHandler = require('./api/forgot-password');
+
     console.log('✅ All handlers loaded successfully');
 
     // Register routes
@@ -230,6 +233,7 @@ try {
     app.use('/api/screening', screeningHandler);
     app.use('/api/it-tickets', itTicketsHandler);
     app.use('/api/migrate-user', migrateUserHandler);
+    app.use('/api/forgot-password', forgotPasswordHandler);
 
     console.log('✅ All routes registered');
 
