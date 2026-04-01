@@ -545,11 +545,24 @@ const handler = async (req, res) => {
                     if (req.user.role !== 'bdm' || proposal.createdByUid !== req.user.uid) {
                         return res.status(403).json({ success: false, error: 'Only the BDM who created this proposal can mark it as won' });
                     }
-                    updates = { 
+                    updates = {
                         status: 'won',
                         wonDate: admin.firestore.FieldValue.serverTimestamp()
                     };
                     activityDetail = 'Proposal marked as WON';
+
+                    // Send Project Won email to COO & Director
+                    try {
+                        sendEmailNotification('project.won', {
+                            projectName: proposal.projectName,
+                            clientName: proposal.clientName || proposal.clientCompany || '',
+                            quoteValue: proposal.pricing?.quoteValue || '',
+                            createdBy: req.user.name,
+                            bdmName: req.user.name,
+                            proposalId: id
+                        }).catch(e => console.error('Project won email failed:', e.message));
+                    } catch (e) { console.error('Error preparing project won email:', e.message); }
+
                     break;
 
                 case 'mark_lost':
