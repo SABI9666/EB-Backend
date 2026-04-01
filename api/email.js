@@ -55,7 +55,7 @@ const EMAIL_RECIPIENT_MAP = {
   'screening.rejected': [], // Dynamic only - sent to candidate
 
   // Design File Workflow notification types
-  'design.submitted_for_approval': ['coo'], // Designer submits → COO
+  'design.submitted_for_approval': ['coo', 'director'], // Designer submits → COO/Director
   'design.approved': ['document_controller'],            // COO approves → DC notified + designer (dynamic)
   'design.rejected': [],                                // Dynamic - designer email
   'design.sent_to_client': []                           // Dynamic - client email
@@ -428,7 +428,27 @@ const EMAIL_TEMPLATE_MAP = {
         { label: 'Date', value: formatDate(new Date()) }
       ])}
       ${getStatusBanner('Please review the proposal and proceed with estimation.', 'info')}
-      ${getButton('View Proposal', `${DASHBOARD_URL}?action=view-proposal&id=${data.proposalId || ''}`)}
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin: 25px 0; width: 100%;">
+        <tr>
+          <td align="center">
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+              <tr>
+                <td style="border-radius: 6px; background-color: #667eea;">
+                  <a href="${DASHBOARD_URL}?action=view-proposal&id=${data.proposalId || ''}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
+                    View Proposal
+                  </a>
+                </td>
+                <td style="width: 12px;"></td>
+                <td style="border-radius: 6px; background-color: #764ba2;">
+                  <a href="${DASHBOARD_URL}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
+                    Open EB-Tracker Portal
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     `, 'Please take necessary action on this proposal.')
   },
 
@@ -444,9 +464,31 @@ const EMAIL_TEMPLATE_MAP = {
       ${getInfoBox([
         { label: 'Project Name', value: data.projectName || 'N/A' },
         { label: 'Client', value: data.clientName || 'N/A' },
-        { label: 'Submitted By', value: data.createdBy || 'N/A' }
+        { label: 'Submitted By', value: data.createdBy || 'N/A' },
+        { label: 'Date', value: formatDate(new Date()) }
       ])}
-      ${getButton('Review Project', `${DASHBOARD_URL}?action=view-proposal&id=${data.proposalId || ''}`)}
+      ${getStatusBanner('This project requires your review and approval.', 'info')}
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin: 25px 0; width: 100%;">
+        <tr>
+          <td align="center">
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+              <tr>
+                <td style="border-radius: 6px; background-color: #667eea;">
+                  <a href="${DASHBOARD_URL}?action=view-proposal&id=${data.proposalId || ''}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
+                    Review Project
+                  </a>
+                </td>
+                <td style="width: 12px;"></td>
+                <td style="border-radius: 6px; background-color: #764ba2;">
+                  <a href="${DASHBOARD_URL}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
+                    Open EB-Tracker Portal
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     `)
   },
 
@@ -467,6 +509,36 @@ const EMAIL_TEMPLATE_MAP = {
       </p>
       ${getButton('View Project', `${DASHBOARD_URL}?action=view-proposal&id=${data.proposalId || ''}`)}
     `)
+  },
+
+  // =============== PROJECT WON TEMPLATE ===============
+  'project.won': {
+    subject: '🎉 Project Won – {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 15px 0; color: #1e293b; font-size: 22px;">
+        🎉 Project Won!
+      </h2>
+      ${getStatusBanner('Congratulations! A project has been won and is ready for allocation.', 'success')}
+      <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        The following project has been marked as <strong style="color: #27ae60;">WON</strong> and is now ready for the next phase.
+      </p>
+      ${getInfoBox([
+        { label: 'Project Name', value: data.projectName || 'N/A' },
+        { label: 'Client', value: data.clientName || data.clientCompany || 'N/A' },
+        { label: 'Quote Value', value: data.quoteValue ? ('$' + Number(data.quoteValue).toLocaleString('en-US')) : 'N/A' },
+        { label: 'BDM', value: data.createdBy || data.bdmName || 'N/A' },
+        { label: 'Won Date', value: formatDate(new Date()) }
+      ])}
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin: 25px 0; width: 100%;">
+        <tr>
+          <td style="border-radius: 6px; background-color: #27ae60; text-align: center;">
+            <a href="${DASHBOARD_URL}" target="_blank" style="display: inline-block; padding: 14px 32px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
+              Open EB-Tracker Portal
+            </a>
+          </td>
+        </tr>
+      </table>
+    `, 'Project won — ready for allocation.')
   },
 
   // =============== LEAVE REQUEST TEMPLATES ===============
@@ -635,7 +707,27 @@ const EMAIL_TEMPLATE_MAP = {
         { label: 'Submitted', value: formatDate(new Date()) }
       ])}
       ${getStatusBanner('This design file requires your approval before it can be sent to the client.', 'warning')}
-      ${getButton('Review & Approve', `${DASHBOARD_URL}?action=design-approvals`)}
+      <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin: 25px 0; width: 100%;">
+        <tr>
+          <td align="center">
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+              <tr>
+                <td style="border-radius: 6px; background-color: #667eea;">
+                  <a href="${DASHBOARD_URL}?action=design-approvals" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
+                    Review & Approve
+                  </a>
+                </td>
+                <td style="width: 12px;"></td>
+                <td style="border-radius: 6px; background-color: #764ba2;">
+                  <a href="${DASHBOARD_URL}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
+                    Open EB-Tracker Portal
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     `, 'Please review and approve/reject this design file.')
   },
 
