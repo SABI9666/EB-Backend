@@ -19,43 +19,43 @@ const DC_FROM_EMAIL = 'EDANBROOK Document Controller <iva@edanbrook.com>'; // Do
 const DASHBOARD_URL = 'https://edanbrook-tracker.web.app';
 
 const EMAIL_RECIPIENT_MAP = {
-  'proposal.created': ['coo', 'director', 'estimator'],
-  'project.submitted': ['coo', 'director', 'estimator'],
+  'proposal.created': ['coo', 'director', 'estimator'],  // Director: New Project Submission
+  'project.submitted': ['coo', 'director', 'estimator'], // Director: New Project Submission
   'project.approved_by_director': [], // Dynamic only (BDM)
   'proposal.uploaded': ['estimator'],
   'estimation.complete': ['coo'],
-  'pricing.complete': ['director'], // COO completes pricing → Director approves
-  'pricing.allocated': ['director'], // For backwards compatibility
-  'project.won': ['coo', 'director'],
+  'pricing.complete': ['coo'], // COO completes pricing → COO handles approval flow
+  'pricing.allocated': ['coo'], // For backwards compatibility
+  'project.won': ['coo', 'director'], // Director: Job Won notification
   'project.allocated': ['coo'], // COO allocates → Design Manager (+ dynamic Design Manager)
   'designer.allocated': ['coo'], // Design Manager allocates → Designer (+ dynamic Designer)
-  'variation.allocated': ['bdm', 'coo', 'director'],
-  'variation.approved': ['bdm', 'coo', 'director', 'design_lead'],
-  'invoice.saved': ['bdm', 'coo', 'director'],
-  
+  'variation.allocated': ['bdm', 'coo'],
+  'variation.approved': ['bdm', 'coo', 'design_lead'],
+  'invoice.saved': ['bdm', 'coo'],
+
   // New notification types for timesheet workflow
-  'time_request.created': ['design_lead', 'coo', 'director'], // Designer requests additional hours
-  'time_request.approved': ['design_lead', 'director'], // COO approves additional hours - Designer added dynamically via data.designerEmail
+  'time_request.created': ['design_lead', 'coo'], // Designer requests additional hours
+  'time_request.approved': ['design_lead'], // COO approves additional hours - Designer added dynamically via data.designerEmail
   'time_request.rejected': ['design_lead'], // COO rejects additional hours - Designer added dynamically via data.designerEmail
-  'variation.requested': ['coo', 'director'], // Design Manager requests variation
-  'variation.approved_detail': ['design_lead', 'bdm', 'director', 'coo'], // Variation approval with hour/rate details
-  'invoice.created': ['coo', 'director', 'bdm'], // Invoice created
-  'invoice.payment_due': ['coo', 'director', 'bdm'], // Payment due reminder
-  'invoice.overdue': ['coo', 'director', 'bdm'], // Overdue payment notification
-  
+  'variation.requested': ['coo'], // Design Manager requests variation
+  'variation.approved_detail': ['design_lead', 'bdm', 'coo'], // Variation approval with hour/rate details
+  'invoice.created': ['coo', 'bdm'], // Invoice created
+  'invoice.payment_due': ['coo', 'bdm'], // Payment due reminder
+  'invoice.overdue': ['coo', 'bdm'], // Overdue payment notification
+
   // Leave Request notification types
-  'leave.submitted': ['coo', 'director', 'hr'], // Employee submits leave → COO, Director, HR notified
+  'leave.submitted': ['coo', 'hr'], // Employee submits leave → COO, HR notified
   'leave.approved': [], // Approval notification → Employee (dynamic)
   'leave.rejected': [], // Rejection notification → Employee (dynamic)
   'leave.stage_approved': ['hr'], // Stage approval → HR notified for final processing
-  
+
   // HR Screening / Interview notification types
   'screening.interview_invitation': [], // Dynamic only - sent directly to candidate email
   'screening.candidate_submitted': ['hr', 'coo'], // Candidate submitted assessment → HR, COO notified
   'screening.rejected': [], // Dynamic only - sent to candidate
-  
+
   // Design File Workflow notification types
-  'design.submitted_for_approval': ['coo', 'director'], // Designer submits → COO/Director
+  'design.submitted_for_approval': ['coo'], // Designer submits → COO
   'design.approved': ['document_controller'],            // COO approves → DC notified + designer (dynamic)
   'design.rejected': [],                                // Dynamic - designer email
   'design.sent_to_client': []                           // Dynamic - client email
