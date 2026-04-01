@@ -1757,6 +1757,72 @@ const handler = async (req, res) => {
             }
 
             // ============================================
+            // DELETE / REPLACE DESIGN FILE (Designer only)
+            // ============================================
+            else if (action === 'delete_design_file') {
+                const { designFileId } = data;
+                if (!designFileId) {
+                    return res.status(400).json({ success: false, error: 'Design file ID is required' });
+                }
+
+                const delFileRef = db.collection('designFiles').doc(designFileId);
+                const delFileDoc = await delFileRef.get();
+                if (!delFileDoc.exists) {
+                    return res.status(404).json({ success: false, error: 'Design file not found' });
+                }
+
+                const delFile = delFileDoc.data();
+
+                // Only the uploader can delete, and only before approval
+                if (delFile.uploadedByUid !== req.user.uid) {
+                    return res.status(403).json({ success: false, error: 'You can only delete your own uploads' });
+                }
+                if (!['uploaded', 'pending_approval', 'rejected'].includes(delFile.status)) {
+                    return res.status(400).json({ success: false, error: 'Cannot delete files that have been approved or sent' });
+                }
+
+                // Delete the file from Firebase Storage if it's a real file
+                if (delFile.fileUrl && !delFile.isExternalLink && delFile.uploadType !== 'link') {
+                    try {
+                        const bucket = admin.storage().bucket();
+                        // Extract storage path from URL
+                        const urlParts = delFile.fileUrl.split(`${bucket.name}/`);
+                        if (urlParts[1]) {
+                            await bucket.file(decodeURIComponent(urlParts[1])).delete().catch(() => {});
+                        }
+                    } catch (e) {
+                        console.warn('Could not delete storage file:', e.message);
+                    }
+                }
+
+                // Delete the designFiles record
+                await delFileRef.delete();
+
+                // Also delete linked deliverable if exists
+                if (delFile.deliverableId) {
+                    try {
+                        await db.collection('deliverables').doc(delFile.deliverableId).delete();
+                    } catch (e) {
+                        console.warn('Could not delete linked deliverable:', e.message);
+                    }
+                }
+
+                // Log activity
+                await db.collection('activities').add({
+                    type: 'design_file_deleted',
+                    details: `Design file "${delFile.fileName}" deleted by ${req.user.name || 'designer'} for ${project.projectName || 'project'}`,
+                    performedByName: req.user.name || '',
+                    performedByRole: req.user.role,
+                    performedByUid: req.user.uid,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    projectId: id,
+                    designFileId: designFileId
+                });
+
+                return res.status(200).json({ success: true, message: 'Design file deleted successfully' });
+            }
+
+            // ============================================
             // DC COMMENTS & CLIENT FEEDBACK
             // ============================================
             else if (action === 'add_dc_comment') {
