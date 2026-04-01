@@ -183,9 +183,10 @@ const handler = async (req, res) => {
                     uploadedLinks.push({ id: docRef.id, ...deliverableData });
 
                     // Also create a designFiles record for the DC workflow pipeline
+                    // Auto-submit for COO approval
                     await db.collection('designFiles').add({
                         projectId,
-                        projectName: project.projectName,
+                        projectName: project.projectName || '',
                         projectCode: project.projectCode || 'N/A',
                         clientCompany: project.clientCompany || 'N/A',
                         fileName: link.title || link.url,
@@ -196,11 +197,14 @@ const handler = async (req, res) => {
                         clientEmail: '',
                         clientName: '',
                         uploadedByUid: req.user.uid,
-                        uploadedByName: req.user.name,
+                        uploadedByName: req.user.name || '',
                         uploadedByEmail: req.user.email || '',
-                        status: 'uploaded',
+                        status: 'pending_approval',
                         designerNotes: uploadNotes || link.description || '',
                         deliverableId: docRef.id,
+                        submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        submittedByUid: req.user.uid,
+                        submittedByName: req.user.name || '',
                         uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
                         createdAt: admin.firestore.FieldValue.serverTimestamp(),
                         updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -358,9 +362,10 @@ const handler = async (req, res) => {
                                 uploadedFiles.push({ id: docRef.id, ...deliverableData });
 
                                 // Also create a designFiles record for the DC workflow pipeline
+                                // Auto-submit for COO approval
                                 await db.collection('designFiles').add({
                                     projectId,
-                                    projectName: project.projectName,
+                                    projectName: project.projectName || '',
                                     projectCode: project.projectCode || 'N/A',
                                     clientCompany: project.clientCompany || 'N/A',
                                     fileName: file.originalname,
@@ -371,11 +376,14 @@ const handler = async (req, res) => {
                                     clientEmail: '',
                                     clientName: '',
                                     uploadedByUid: req.user.uid,
-                                    uploadedByName: req.user.name,
+                                    uploadedByName: req.user.name || '',
                                     uploadedByEmail: req.user.email || '',
-                                    status: 'uploaded',
+                                    status: 'pending_approval',
                                     designerNotes: uploadNotes || description || '',
                                     deliverableId: docRef.id,
+                                    submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+                                    submittedByUid: req.user.uid,
+                                    submittedByName: req.user.name || '',
                                     uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
                                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -427,12 +435,24 @@ const handler = async (req, res) => {
                                 });
                             }
 
-                            // Also notify COO
+                            // Notify COO about pending approval
                             await db.collection('notifications').add({
-                                type: 'deliverable_uploaded',
+                                type: 'design_file_approval_pending',
                                 recipientRole: 'coo',
-                                message: `New deliverables uploaded for ${project.projectName || 'project'} by ${req.user.name || 'designer'}`,
+                                message: `${uploadedFiles.length} design file(s) pending your approval for ${project.projectName || 'project'} by ${req.user.name || 'designer'}`,
                                 projectId: projectId,
+                                priority: 'high',
+                                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                                isRead: false
+                            });
+
+                            // Also notify Director
+                            await db.collection('notifications').add({
+                                type: 'design_file_approval_pending',
+                                recipientRole: 'director',
+                                message: `${uploadedFiles.length} design file(s) pending approval for ${project.projectName || 'project'} by ${req.user.name || 'designer'}`,
+                                projectId: projectId,
+                                priority: 'normal',
                                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                                 isRead: false
                             });
