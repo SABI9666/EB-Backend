@@ -596,6 +596,9 @@ const handler = async (req, res) => {
                     projectCreated: true,
                     projectId: projectRef.id,
                     projectCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    allocationStatus: 'not_started',
+                    totalAllocatedHours: 0,
+                    maxAllocatedHours: parseFloat(projectData.maxAllocatedHours) || 0,
                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
                 });
                 
@@ -1993,7 +1996,29 @@ const handler = async (req, res) => {
             const sanitizedUpdates = sanitizeForFirestore(updates);
             
             await projectRef.update(sanitizedUpdates);
-            
+
+            // ✅ Sync allocation status back to proposal so COO portal shows correct status
+            if (['allocate_to_multiple_designers', 'update_designer_allocation', 'update_max_hours', 'allocate_to_designers'].includes(action)) {
+                const proposalId = project.proposalId;
+                if (proposalId) {
+                    try {
+                        // Read the updated project to get final values
+                        const updatedProject = (await projectRef.get()).data();
+                        const proposalSyncData = {
+                            allocationStatus: updatedProject.allocationStatus || 'not_started',
+                            totalAllocatedHours: parseFloat(updatedProject.totalAllocatedHours) || 0,
+                            maxAllocatedHours: parseFloat(updatedProject.maxAllocatedHours) || 0,
+                            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                        };
+                        await db.collection('proposals').doc(proposalId).update(proposalSyncData);
+                        console.log(`✅ Synced allocation status to proposal ${proposalId}: ${proposalSyncData.allocationStatus}`);
+                    } catch (syncErr) {
+                        console.error('⚠️ Failed to sync allocation status to proposal:', syncErr);
+                        // Non-blocking - don't fail the main operation
+                    }
+                }
+            }
+
             // Log activity
             await db.collection('activities').add({
                 type: `project_${action}`,
