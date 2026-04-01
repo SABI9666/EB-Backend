@@ -147,10 +147,10 @@ const handler = async (req, res) => {
                 for (const link of links) {
                     const deliverableData = {
                         projectId,
-                        projectCode: project.projectCode,
-                        projectName: project.projectName,
+                        projectCode: project.projectCode || '',
+                        projectName: project.projectName || '',
                         taskId: taskId || null,
-                        
+
                         // File info
                         deliverableType: 'link',
                         url: link.url,
@@ -166,10 +166,10 @@ const handler = async (req, res) => {
                         
                         // Designer info
                         designerUid: req.user.uid,
-                        designerName: req.user.name,
-                        
+                        designerName: req.user.name || '',
+
                         // Status
-                        reviewStatus: 'pending', // pending, approved, revision_required
+                        reviewStatus: 'pending',
                         reviewedBy: null,
                         reviewedAt: null,
                         reviewComments: '',
@@ -228,16 +228,18 @@ const handler = async (req, res) => {
                 }
 
                 // Notify Design Lead and COO about upload
-                await db.collection('notifications').add({
-                    type: 'deliverable_uploaded',
-                    recipientUid: project.designLeadUid,
-                    recipientRole: 'design_lead',
-                    message: `${req.user.name} uploaded ${uploadedLinks.length} link(s) for ${project.projectName}`,
-                    projectId: projectId,
-                    priority: 'normal',
-                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                    isRead: false
-                });
+                if (project.designLeadUid) {
+                    await db.collection('notifications').add({
+                        type: 'deliverable_uploaded',
+                        recipientUid: project.designLeadUid,
+                        recipientRole: 'design_lead',
+                        message: `${req.user.name || 'Designer'} uploaded ${uploadedLinks.length} link(s) for ${project.projectName || 'project'}`,
+                        projectId: projectId,
+                        priority: 'normal',
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false
+                    });
+                }
 
                 return res.status(201).json({
                     success: true,
@@ -321,10 +323,10 @@ const handler = async (req, res) => {
                                 // Save deliverable metadata to Firestore
                                 const deliverableData = {
                                     projectId,
-                                    projectCode: project.projectCode,
-                                    projectName: project.projectName,
+                                    projectCode: project.projectCode || '',
+                                    projectName: project.projectName || '',
                                     taskId: taskId || null,
-                                    
+
                                     // File info
                                     deliverableType: 'file',
                                     fileName,
@@ -332,21 +334,21 @@ const handler = async (req, res) => {
                                     url: publicUrl,
                                     mimeType: file.mimetype,
                                     fileSize: file.size,
-                                    
+
                                     // Version and notes
                                     versionNumber: versionNumber || '1.0',
                                     uploadNotes: uploadNotes || description || '',
-                                    
+
                                     // Designer info
                                     designerUid: req.user.uid,
-                                    designerName: req.user.name,
-                                    
+                                    designerName: req.user.name || '',
+
                                     // Status
-                                    reviewStatus: 'pending', // pending, approved, revision_required
+                                    reviewStatus: 'pending',
                                     reviewedBy: null,
                                     reviewedAt: null,
                                     reviewComments: '',
-                                    
+
                                     // Timestamps
                                     uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
                                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -411,23 +413,25 @@ const handler = async (req, res) => {
                                 });
                             }
 
-                            // Notify Design Lead about upload
-                            await db.collection('notifications').add({
-                                type: 'deliverable_uploaded',
-                                recipientUid: project.designLeadUid,
-                                recipientRole: 'design_lead',
-                                message: `${req.user.name} uploaded ${uploadedFiles.length} file(s) for ${project.projectName}${(uploadNotes || description) ? ` - ${uploadNotes || description}` : ''}`,
-                                projectId: projectId,
-                                priority: 'normal',
-                                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                                isRead: false
-                            });
-                            
+                            // Notify Design Lead about upload (only if design lead exists)
+                            if (project.designLeadUid) {
+                                await db.collection('notifications').add({
+                                    type: 'deliverable_uploaded',
+                                    recipientUid: project.designLeadUid,
+                                    recipientRole: 'design_lead',
+                                    message: `${req.user.name} uploaded ${uploadedFiles.length} file(s) for ${project.projectName || 'project'}${(uploadNotes || description) ? ` - ${uploadNotes || description}` : ''}`,
+                                    projectId: projectId,
+                                    priority: 'normal',
+                                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                                    isRead: false
+                                });
+                            }
+
                             // Also notify COO
                             await db.collection('notifications').add({
                                 type: 'deliverable_uploaded',
                                 recipientRole: 'coo',
-                                message: `New deliverables uploaded for ${project.projectName} by ${req.user.name}`,
+                                message: `New deliverables uploaded for ${project.projectName || 'project'} by ${req.user.name || 'designer'}`,
                                 projectId: projectId,
                                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                                 isRead: false
