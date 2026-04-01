@@ -259,6 +259,78 @@ const handler = async (req, res) => {
             }
 
             // ================================================
+            // GET DC Comments & Activity History
+            // ================================================
+            if (action === 'get_dc_comments') {
+                const projectIdFilter = req.query.projectId;
+                const designFileIdFilter = req.query.designFileId;
+
+                try {
+                    let query = db.collection('dcComments');
+
+                    if (projectIdFilter) {
+                        query = query.where('projectId', '==', projectIdFilter);
+                    }
+                    if (designFileIdFilter) {
+                        query = query.where('designFileId', '==', designFileIdFilter);
+                    }
+
+                    let snapshot;
+                    try {
+                        snapshot = await query.orderBy('createdAt', 'desc').get();
+                    } catch (indexError) {
+                        snapshot = await query.get();
+                    }
+
+                    const comments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                    // Sort manually as fallback
+                    comments.sort((a, b) => {
+                        const dateA = a.createdAt?.seconds || 0;
+                        const dateB = b.createdAt?.seconds || 0;
+                        return dateB - dateA;
+                    });
+
+                    // Also fetch related activities for the project
+                    let activities = [];
+                    if (projectIdFilter) {
+                        let actQuery = db.collection('activities')
+                            .where('projectId', '==', projectIdFilter)
+                            .where('type', 'in', [
+                                'design_file_uploaded', 'design_file_submitted',
+                                'design_file_approved', 'design_file_rejected',
+                                'design_file_sent_to_client', 'dc_comment_added',
+                                'deliverable_uploaded'
+                            ]);
+
+                        let actSnapshot;
+                        try {
+                            actSnapshot = await actQuery.orderBy('timestamp', 'desc').limit(50).get();
+                        } catch (e) {
+                            actSnapshot = await actQuery.limit(50).get();
+                        }
+
+                        activities = actSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        activities.sort((a, b) => {
+                            const dateA = a.timestamp?.seconds || 0;
+                            const dateB = b.timestamp?.seconds || 0;
+                            return dateB - dateA;
+                        });
+                    }
+
+                    return res.status(200).json({
+                        success: true,
+                        comments,
+                        activities,
+                        total: comments.length
+                    });
+                } catch (err) {
+                    console.error('Error fetching DC comments:', err);
+                    return res.status(500).json({ success: false, error: err.message });
+                }
+            }
+
+            // ================================================
             // Generate Variation Code Logic
             // ================================================
             if (action === 'generate-variation-code') {
@@ -1685,9 +1757,96 @@ const handler = async (req, res) => {
             }
 
             // ============================================
+            // DC COMMENTS & CLIENT FEEDBACK
+            // ============================================
+            else if (action === 'add_dc_comment') {
+                const { designFileId, comment, commentType, clientResponse } = data;
+
+                if (!designFileId || !comment) {
+                    return res.status(400).json({
+                        success: false,
+                        error: 'Design file ID and comment are required'
+                    });
+                }
+
+                // Verify design file exists
+                const dcFileRef = db.collection('designFiles').doc(designFileId);
+                const dcFileDoc = await dcFileRef.get();
+                if (!dcFileDoc.exists) {
+                    return res.status(404).json({ success: false, error: 'Design file not found' });
+                }
+
+                const dcFile = dcFileDoc.data();
+
+                // Create comment record
+                const commentData = {
+                    designFileId,
+                    projectId: id,
+                    projectName: project.projectName,
+                    projectCode: project.projectCode || '',
+                    fileName: dcFile.fileName || '',
+                    comment: comment,
+                    commentType: commentType || 'general', // general, client_feedback, rectification, revision_request, resolved
+                    clientResponse: clientResponse || '',
+                    createdByUid: req.user.uid,
+                    createdByName: req.user.name,
+                    createdByEmail: req.user.email || '',
+                    createdByRole: req.user.role,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                };
+
+                const commentRef = await db.collection('dcComments').add(commentData);
+
+                // Log activity
+                await db.collection('activities').add({
+                    type: 'dc_comment_added',
+                    details: `DC comment on "${dcFile.fileName}" for ${project.projectName}: ${comment.substring(0, 100)}`,
+                    performedByName: req.user.name,
+                    performedByRole: req.user.role,
+                    performedByUid: req.user.uid,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    projectId: id,
+                    designFileId: designFileId,
+                    commentId: commentRef.id
+                });
+
+                // Notify COO and Director about the comment
+                await db.collection('notifications').add({
+                    type: 'dc_comment',
+                    recipientRole: 'coo',
+                    message: `DC ${req.user.name} added ${commentType === 'client_feedback' ? 'client feedback' : commentType === 'rectification' ? 'rectification note' : 'comment'} on "${dcFile.fileName}" for ${project.projectName}`,
+                    projectId: id,
+                    designFileId: designFileId,
+                    commentId: commentRef.id,
+                    priority: commentType === 'rectification' ? 'high' : 'normal',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    isRead: false
+                });
+
+                await db.collection('notifications').add({
+                    type: 'dc_comment',
+                    recipientRole: 'director',
+                    message: `DC ${req.user.name} added ${commentType === 'client_feedback' ? 'client feedback' : commentType === 'rectification' ? 'rectification note' : 'comment'} on "${dcFile.fileName}" for ${project.projectName}`,
+                    projectId: id,
+                    designFileId: designFileId,
+                    commentId: commentRef.id,
+                    priority: commentType === 'rectification' ? 'high' : 'normal',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    isRead: false
+                });
+
+                return res.status(200).json({
+                    success: true,
+                    message: 'Comment added successfully',
+                    commentId: commentRef.id
+                });
+            }
+
+            // ============================================
             // END: Design File Workflow
             // ============================================
-            
+
             else {
                 return res.status(400).json({ 
                     success: false, 

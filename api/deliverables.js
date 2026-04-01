@@ -23,14 +23,17 @@ const upload = multer({
             'image/tiff',
             'application/dwg',
             'application/dxf',
-            'application/zip'
+            'application/zip',
+            'application/x-zip-compressed',
+            'application/x-zip',
+            'application/octet-stream'
         ];
         
-        if (allowedTypes.includes(file.mimetype) || 
-            file.originalname.match(/\.(pdf|jpg|jpeg|png|tiff|dwg|dxf|zip)$/i)) {
+        if (allowedTypes.includes(file.mimetype) ||
+            file.originalname.match(/\.(pdf|jpg|jpeg|png|tiff|dwg|dxf|zip|rar|7z)$/i)) {
             cb(null, true);
         } else {
-            cb(new Error('Invalid file type. Allowed: PDF, JPG, PNG, TIFF, DWG, DXF, ZIP'));
+            cb(new Error('Invalid file type. Allowed: PDF, JPG, PNG, TIFF, DWG, DXF, ZIP, RAR, 7Z'));
         }
     }
 });
@@ -109,7 +112,7 @@ const handler = async (req, res) => {
                     });
                 });
                 
-                const { projectId, taskId, links, uploadNotes, versionNumber } = req.body;
+                const { projectId, taskId, links, uploadNotes, versionNumber, status } = req.body;
                 
                 // Verify user is assigned to this project
                 const projectDoc = await db.collection('projects').doc(projectId).get();
@@ -172,7 +175,31 @@ const handler = async (req, res) => {
                     
                     const docRef = await db.collection('deliverables').add(deliverableData);
                     uploadedLinks.push({ id: docRef.id, ...deliverableData });
-                    
+
+                    // Also create a designFiles record for the DC workflow pipeline
+                    await db.collection('designFiles').add({
+                        projectId,
+                        projectName: project.projectName,
+                        projectCode: project.projectCode || 'N/A',
+                        clientCompany: project.clientCompany || 'N/A',
+                        fileName: link.title || link.url,
+                        fileUrl: link.url,
+                        fileSize: 0,
+                        uploadType: 'link',
+                        isExternalLink: true,
+                        clientEmail: '',
+                        clientName: '',
+                        uploadedByUid: req.user.uid,
+                        uploadedByName: req.user.name,
+                        uploadedByEmail: req.user.email || '',
+                        status: 'uploaded',
+                        designerNotes: uploadNotes || link.description || '',
+                        deliverableId: docRef.id,
+                        uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+
                     // Log activity
                     await db.collection('activities').add({
                         type: 'deliverable_uploaded',
@@ -186,6 +213,14 @@ const handler = async (req, res) => {
                     });
                 }
                 
+                // Update project design status if status was provided
+                if (status && ['in_progress', 'review', 'completed'].includes(status)) {
+                    await db.collection('projects').doc(projectId).update({
+                        designStatus: status,
+                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                }
+
                 // Notify Design Lead and COO about upload
                 await db.collection('notifications').add({
                     type: 'deliverable_uploaded',
@@ -197,9 +232,9 @@ const handler = async (req, res) => {
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     isRead: false
                 });
-                
-                return res.status(201).json({ 
-                    success: true, 
+
+                return res.status(201).json({
+                    success: true,
                     data: uploadedLinks,
                     message: `${uploadedLinks.length} link(s) uploaded successfully` 
                 });
@@ -224,7 +259,7 @@ const handler = async (req, res) => {
                                 });
                             }
 
-                            const { projectId, taskId, uploadNotes, versionNumber } = req.body;
+                            const { projectId, taskId, uploadNotes, versionNumber, description, status } = req.body;
                             
                             // Verify project exists and user has access
                             const projectDoc = await db.collection('projects').doc(projectId).get();
@@ -288,7 +323,7 @@ const handler = async (req, res) => {
                                     
                                     // Version and notes
                                     versionNumber: versionNumber || '1.0',
-                                    uploadNotes: uploadNotes || '',
+                                    uploadNotes: uploadNotes || description || '',
                                     
                                     // Designer info
                                     designerUid: req.user.uid,
@@ -308,6 +343,30 @@ const handler = async (req, res) => {
                                 const docRef = await db.collection('deliverables').add(deliverableData);
                                 uploadedFiles.push({ id: docRef.id, ...deliverableData });
 
+                                // Also create a designFiles record for the DC workflow pipeline
+                                await db.collection('designFiles').add({
+                                    projectId,
+                                    projectName: project.projectName,
+                                    projectCode: project.projectCode || 'N/A',
+                                    clientCompany: project.clientCompany || 'N/A',
+                                    fileName: file.originalname,
+                                    fileUrl: publicUrl,
+                                    fileSize: file.size,
+                                    uploadType: 'file',
+                                    isExternalLink: false,
+                                    clientEmail: '',
+                                    clientName: '',
+                                    uploadedByUid: req.user.uid,
+                                    uploadedByName: req.user.name,
+                                    uploadedByEmail: req.user.email || '',
+                                    status: 'uploaded',
+                                    designerNotes: uploadNotes || description || '',
+                                    deliverableId: docRef.id,
+                                    uploadedAt: admin.firestore.FieldValue.serverTimestamp(),
+                                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                                });
+
                                 // Log activity
                                 await db.collection('activities').add({
                                     type: 'deliverable_uploaded',
@@ -321,8 +380,19 @@ const handler = async (req, res) => {
                                 });
                             }
                             
-                            // Update project design status if needed
-                            if (project.designStatus === 'not_started') {
+                            // Update project design status based on designer's status selection
+                            const statusMap = {
+                                'in_progress': 'in_progress',
+                                'review': 'review',
+                                'completed': 'completed'
+                            };
+                            const newDesignStatus = statusMap[status] || null;
+                            if (newDesignStatus) {
+                                await db.collection('projects').doc(projectId).update({
+                                    designStatus: newDesignStatus,
+                                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                                });
+                            } else if (project.designStatus === 'not_started') {
                                 await db.collection('projects').doc(projectId).update({
                                     designStatus: 'in_progress',
                                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -334,7 +404,7 @@ const handler = async (req, res) => {
                                 type: 'deliverable_uploaded',
                                 recipientUid: project.designLeadUid,
                                 recipientRole: 'design_lead',
-                                message: `${req.user.name} uploaded ${uploadedFiles.length} file(s) for ${project.projectName}${uploadNotes ? ` - ${uploadNotes}` : ''}`,
+                                message: `${req.user.name} uploaded ${uploadedFiles.length} file(s) for ${project.projectName}${(uploadNotes || description) ? ` - ${uploadNotes || description}` : ''}`,
                                 projectId: projectId,
                                 priority: 'normal',
                                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
