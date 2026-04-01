@@ -124,10 +124,16 @@ const handler = async (req, res) => {
                 
                 // Check if user is assigned (for designers) or has access (for design leads)
                 if (req.user.role === 'designer') {
-                    if (!project.assignedDesigners || !project.assignedDesigners.includes(req.user.uid)) {
-                        return res.status(403).json({ 
-                            success: false, 
-                            error: 'You are not assigned to this project' 
+                    const uid = req.user.uid;
+                    const isAssigned =
+                        (project.assignedDesigners && project.assignedDesigners.includes(uid)) ||
+                        (project.assignedDesignerUids && project.assignedDesignerUids.includes(uid)) ||
+                        (project.designerHours && project.designerHours[uid]) ||
+                        (project.assignedDesignerHours && project.assignedDesignerHours[uid]);
+                    if (!isAssigned) {
+                        return res.status(403).json({
+                            success: false,
+                            error: 'You are not assigned to this project'
                         });
                     }
                 }
@@ -272,12 +278,18 @@ const handler = async (req, res) => {
                             
                             const project = projectDoc.data();
                             
-                            // Check if designer is assigned to project
+                            // Check if user has access to upload for this project
                             if (req.user.role === 'designer') {
-                                if (!project.assignedDesigners || !project.assignedDesigners.includes(req.user.uid)) {
-                                    return res.status(403).json({ 
-                                        success: false, 
-                                        error: 'You are not assigned to this project' 
+                                const uid = req.user.uid;
+                                const isAssigned =
+                                    (project.assignedDesigners && project.assignedDesigners.includes(uid)) ||
+                                    (project.assignedDesignerUids && project.assignedDesignerUids.includes(uid)) ||
+                                    (project.designerHours && project.designerHours[uid]) ||
+                                    (project.assignedDesignerHours && project.assignedDesignerHours[uid]);
+                                if (!isAssigned) {
+                                    return res.status(403).json({
+                                        success: false,
+                                        error: 'You are not assigned to this project'
                                     });
                                 }
                             }
