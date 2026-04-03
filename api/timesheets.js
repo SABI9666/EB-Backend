@@ -165,12 +165,16 @@ timesheetsRouter.get('/', async (req, res) => {
             }));
 
             // Section-wise breakdown
+            const initRevenueByCurrency = () => ({ USD: 0, GBP: 0, CAD: 0, AUD: 0 });
             const sectionBreakdown = {
-                Engineering: { count: 0, revenue: 0, hoursAllocated: 0, hoursLogged: 0, projects: [] },
-                Rebar: { count: 0, revenue: 0, hoursAllocated: 0, hoursLogged: 0, projects: [] },
-                Structural: { count: 0, revenue: 0, hoursAllocated: 0, hoursLogged: 0, projects: [] },
-                Unassigned: { count: 0, revenue: 0, hoursAllocated: 0, hoursLogged: 0, projects: [] }
+                Engineering: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] },
+                Rebar: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] },
+                Structural: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] },
+                Unassigned: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] }
             };
+
+            // Total revenue by currency
+            const totalRevenueByCurrency = { USD: 0, GBP: 0, CAD: 0, AUD: 0 };
 
             let metrics = {
                 totalProjects: projects.length,
@@ -199,6 +203,20 @@ timesheetsRouter.get('/', async (req, res) => {
                 section.revenue += p.quoteValue || 0;
                 section.hoursAllocated += p.allocatedHours || 0;
                 section.hoursLogged += p.hoursLogged || 0;
+
+                // Revenue by currency (normalize currency key)
+                const rawCurrency = (p.currency || 'USD').toUpperCase().trim();
+                const currencyKey = rawCurrency === 'AED' ? 'AED'
+                    : rawCurrency === 'POUNDS' || rawCurrency === 'GBP' ? 'GBP'
+                    : rawCurrency === 'AUS' || rawCurrency === 'AUD' || rawCurrency === 'AUS CAD' ? 'AUD'
+                    : rawCurrency === 'CAD' ? 'CAD'
+                    : rawCurrency;
+                // Add to section currency breakdown
+                if (!section.revenueByCurrency[currencyKey]) section.revenueByCurrency[currencyKey] = 0;
+                section.revenueByCurrency[currencyKey] += p.quoteValue || 0;
+                // Add to total currency breakdown
+                if (!totalRevenueByCurrency[currencyKey]) totalRevenueByCurrency[currencyKey] = 0;
+                totalRevenueByCurrency[currencyKey] += p.quoteValue || 0;
 
                 // Total revenue
                 metrics.totalRevenue += p.quoteValue || 0;
@@ -237,7 +255,7 @@ timesheetsRouter.get('/', async (req, res) => {
 
             return res.status(200).json({
                 success: true,
-                data: { metrics, projects, sectionBreakdown, designers: designers.map(d => ({
+                data: { metrics, projects, sectionBreakdown, totalRevenueByCurrency, designers: designers.map(d => ({
                     name: d.name, email: d.email, totalHours: d.totalHours, projectsWorkedOn: d.projectsWorkedOn,
                 })), analytics }
             });
