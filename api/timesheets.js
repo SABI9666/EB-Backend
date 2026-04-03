@@ -253,9 +253,103 @@ timesheetsRouter.get('/', async (req, res) => {
 
             metrics.averageHoursPerProject = projects.length > 0 ? (metrics.totalLoggedHours / projects.length) : 0;
 
+            // ============================================
+            // Revenue by Period (Monthly, Quarterly, Yearly)
+            // ============================================
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const currentMonth = now.getMonth(); // 0-indexed
+            const currentQuarter = Math.floor(currentMonth / 3); // 0-3
+
+            // Helper to get Date from Firestore timestamp
+            const toDate = (ts) => {
+                if (!ts) return null;
+                if (ts.seconds) return new Date(ts.seconds * 1000);
+                if (ts._seconds) return new Date(ts._seconds * 1000);
+                if (typeof ts === 'string') return new Date(ts);
+                if (ts instanceof Date) return ts;
+                return null;
+            };
+
+            // Initialize period revenue structures
+            const initCurrMap = () => ({ USD: 0, GBP: 0, CAD: 0, AUD: 0 });
+
+            // Monthly: last 12 months
+            const monthlyRevenue = {};
+            for (let i = 0; i < 12; i++) {
+                const d = new Date(currentYear, currentMonth - i, 1);
+                const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                monthlyRevenue[key] = { label: d.toLocaleString('en-US', { month: 'short', year: 'numeric' }), revenue: initCurrMap(), count: 0 };
+            }
+
+            // Quarterly: last 4 quarters
+            const quarterlyRevenue = {};
+            for (let i = 0; i < 4; i++) {
+                const q = ((currentQuarter - i) % 4 + 4) % 4;
+                const y = currentYear - (currentQuarter - i < 0 ? 1 : 0);
+                const key = `${y}-Q${q + 1}`;
+                const qMonths = ['Jan-Mar', 'Apr-Jun', 'Jul-Sep', 'Oct-Dec'];
+                quarterlyRevenue[key] = { label: `Q${q + 1} ${y} (${qMonths[q]})`, revenue: initCurrMap(), count: 0 };
+            }
+
+            // Yearly: last 3 years
+            const yearlyRevenue = {};
+            for (let i = 0; i < 3; i++) {
+                const y = currentYear - i;
+                yearlyRevenue[y] = { label: String(y), revenue: initCurrMap(), count: 0 };
+            }
+
+            // Populate period revenue from projects
+            projects.forEach(p => {
+                const projectDate = toDate(p.createdAt) || toDate(p.allocationDate);
+                if (!projectDate) return;
+
+                const pYear = projectDate.getFullYear();
+                const pMonth = projectDate.getMonth();
+                const pQuarter = Math.floor(pMonth / 3);
+                const val = p.quoteValue || 0;
+                if (val <= 0) return;
+
+                const rawCurrency = (p.currency || 'USD').toUpperCase().trim();
+                const cur = rawCurrency === 'POUNDS' || rawCurrency === 'GBP' ? 'GBP'
+                    : rawCurrency === 'AUS' || rawCurrency === 'AUD' ? 'AUD'
+                    : rawCurrency === 'CAD' ? 'CAD'
+                    : rawCurrency === 'USD' ? 'USD'
+                    : rawCurrency;
+
+                // Monthly
+                const mKey = `${pYear}-${String(pMonth + 1).padStart(2, '0')}`;
+                if (monthlyRevenue[mKey]) {
+                    if (!monthlyRevenue[mKey].revenue[cur]) monthlyRevenue[mKey].revenue[cur] = 0;
+                    monthlyRevenue[mKey].revenue[cur] += val;
+                    monthlyRevenue[mKey].count++;
+                }
+
+                // Quarterly
+                const qKey = `${pYear}-Q${pQuarter + 1}`;
+                if (quarterlyRevenue[qKey]) {
+                    if (!quarterlyRevenue[qKey].revenue[cur]) quarterlyRevenue[qKey].revenue[cur] = 0;
+                    quarterlyRevenue[qKey].revenue[cur] += val;
+                    quarterlyRevenue[qKey].count++;
+                }
+
+                // Yearly
+                if (yearlyRevenue[pYear]) {
+                    if (!yearlyRevenue[pYear].revenue[cur]) yearlyRevenue[pYear].revenue[cur] = 0;
+                    yearlyRevenue[pYear].revenue[cur] += val;
+                    yearlyRevenue[pYear].count++;
+                }
+            });
+
+            const revenuePeriods = {
+                monthly: Object.values(monthlyRevenue).reverse(),
+                quarterly: Object.values(quarterlyRevenue).reverse(),
+                yearly: Object.values(yearlyRevenue).reverse()
+            };
+
             return res.status(200).json({
                 success: true,
-                data: { metrics, projects, sectionBreakdown, totalRevenueByCurrency, designers: designers.map(d => ({
+                data: { metrics, projects, sectionBreakdown, totalRevenueByCurrency, revenuePeriods, designers: designers.map(d => ({
                     name: d.name, email: d.email, totalHours: d.totalHours, projectsWorkedOn: d.projectsWorkedOn,
                 })), analytics }
             });
