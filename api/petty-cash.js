@@ -67,9 +67,12 @@ router.post('/', verifyToken, async (req, res) => {
         if (receiptBase64 && receiptFileName) {
             const bucket = admin.storage().bucket();
             const fileBuffer = Buffer.from(receiptBase64, 'base64');
+            const ext = receiptFileName.split('.').pop().toLowerCase();
+            const mimeTypes = { pdf:'application/pdf', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp' };
+            const contentType = mimeTypes[ext] || 'application/octet-stream';
             const filePath = `petty-cash-receipts/${Date.now()}_${receiptFileName}`;
             const file = bucket.file(filePath);
-            await file.save(fileBuffer, { metadata: { contentType: 'application/pdf' } });
+            await file.save(fileBuffer, { metadata: { contentType } });
             await file.makePublic();
             receiptUrl = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
         }
@@ -159,6 +162,83 @@ router.post('/', verifyToken, async (req, res) => {
         });
     } catch (error) {
         console.error('Petty Cash POST error:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// PUT /api/petty-cash/:id - Edit petty cash entry
+router.put('/:id', verifyToken, async (req, res) => {
+    try {
+        if (!['accounts', 'coo', 'director'].includes(req.user.role)) {
+            return res.status(403).json({ success: false, error: 'Permission denied' });
+        }
+
+        const entryRef = db.collection('pettyCash').doc(req.params.id);
+        const entryDoc = await entryRef.get();
+        if (!entryDoc.exists) {
+            return res.status(404).json({ success: false, error: 'Entry not found' });
+        }
+
+        const oldEntry = entryDoc.data();
+        const {
+            entryDate, amount, category, description,
+            paidTo, voucherNo, approvedBy, remarks,
+            receiptBase64, receiptFileName
+        } = req.body;
+
+        const updates = { updatedAt: admin.firestore.FieldValue.serverTimestamp(), updatedBy: req.user.name };
+
+        if (entryDate !== undefined) updates.entryDate = entryDate;
+        if (category !== undefined) updates.category = category;
+        if (description !== undefined) updates.description = description;
+        if (paidTo !== undefined) updates.paidTo = paidTo;
+        if (voucherNo !== undefined) updates.voucherNo = voucherNo;
+        if (approvedBy !== undefined) updates.approvedBy = approvedBy;
+        if (remarks !== undefined) updates.remarks = remarks;
+
+        // Handle receipt/image upload
+        if (receiptBase64 && receiptFileName) {
+            const bucket = admin.storage().bucket();
+            const fileBuffer = Buffer.from(receiptBase64, 'base64');
+            const ext = receiptFileName.split('.').pop().toLowerCase();
+            const mimeTypes = { pdf:'application/pdf', jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', gif:'image/gif', webp:'image/webp' };
+            const contentType = mimeTypes[ext] || 'application/octet-stream';
+            const filePath = `petty-cash-receipts/${Date.now()}_${receiptFileName}`;
+            const file = bucket.file(filePath);
+            await file.save(fileBuffer, { metadata: { contentType } });
+            await file.makePublic();
+            updates.receiptUrl = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
+            updates.receiptFileName = receiptFileName;
+        }
+
+        // Handle amount change - adjust fund balance
+        if (amount !== undefined && parseFloat(amount) !== (parseFloat(oldEntry.amount) || 0)) {
+            const oldAmt = parseFloat(oldEntry.amount) || 0;
+            const newAmt = parseFloat(amount) || 0;
+            const diff = newAmt - oldAmt;
+            updates.amount = newAmt;
+
+            const fundRef = db.collection('pettyCashFund').doc('current');
+            if (oldEntry.entryType === 'expense') {
+                await fundRef.update({
+                    currentBalance: admin.firestore.FieldValue.increment(-diff),
+                    totalSpent: admin.firestore.FieldValue.increment(diff),
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+                });
+            } else {
+                await fundRef.update({
+                    currentBalance: admin.firestore.FieldValue.increment(diff),
+                    totalFund: admin.firestore.FieldValue.increment(diff),
+                    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+                });
+            }
+        }
+
+        await entryRef.update(updates);
+
+        return res.status(200).json({ success: true, message: 'Entry updated successfully' });
+    } catch (error) {
+        console.error('Petty Cash PUT error:', error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
