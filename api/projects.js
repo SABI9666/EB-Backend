@@ -717,10 +717,11 @@ const handler = async (req, res) => {
                     status: 'assigned',
                     designStatus: 'allocated',
                     maxAllocatedHours: maxAllocatedHours,
-                    additionalHours: parseFloat(data.additionalHours || 0)
+                    additionalHours: parseFloat(data.additionalHours || 0),
+                    ...(data.projectSection && { projectSection: data.projectSection })
                 };
-                
-                activityDetail = `Project allocated to Design Lead: ${designLeadData.name} by ${req.user.name} with ${maxAllocatedHours} hours.`;
+
+                activityDetail = `Project allocated to Design Lead: ${designLeadData.name} by ${req.user.name} with ${maxAllocatedHours} hours${data.projectSection ? ` [${data.projectSection}]` : ''}.`;
                 
                 // Notify the Design Lead
                 notifications.push({
@@ -1062,9 +1063,14 @@ const handler = async (req, res) => {
                     designStatus: 'in_progress',
                 };
                 
-                // ✅ Save Project Number if provided by COO
+                // Save Project Number if provided by COO
                 if (data.projectNumber) {
                     updates.projectNumber = data.projectNumber;
+                }
+
+                // Save Project Section (Engineering/Rebar/Structural) if provided
+                if (data.projectSection) {
+                    updates.projectSection = data.projectSection;
                 }
                 
                 // ✅ FIX: Only add optional fields if they have valid values (not undefined)

@@ -124,8 +124,15 @@ timesheetsRouter.get('/', async (req, res) => {
                     ...data,
                     allocatedHours: data.maxAllocatedHours || 0,
                     hoursLogged: 0,
+                    projectSection: data.projectSection || 'Unassigned',
+                    quoteValue: parseFloat(data.quoteValue) || 0,
+                    currency: data.currency || 'AED',
                 };
             });
+
+            // Build per-project designer hours map
+            // { projectId: { designerUid: { name, email, hours } } }
+            const projectDesignerHours = {};
 
             allTimesheets.forEach(ts => {
                 if (projectHours[ts.projectId]) {
@@ -135,6 +142,20 @@ timesheetsRouter.get('/', async (req, res) => {
                     allDesigners[ts.designerUid].totalHours += ts.hours || 0;
                     allDesigners[ts.designerUid].projectsWorkedOn.add(ts.projectId);
                 }
+                // Track per-project designer hours
+                if (ts.projectId && ts.designerUid) {
+                    if (!projectDesignerHours[ts.projectId]) {
+                        projectDesignerHours[ts.projectId] = {};
+                    }
+                    if (!projectDesignerHours[ts.projectId][ts.designerUid]) {
+                        projectDesignerHours[ts.projectId][ts.designerUid] = {
+                            name: ts.designerName || (allDesigners[ts.designerUid] ? allDesigners[ts.designerUid].name : 'Unknown'),
+                            email: allDesigners[ts.designerUid] ? allDesigners[ts.designerUid].email : '',
+                            hours: 0
+                        };
+                    }
+                    projectDesignerHours[ts.projectId][ts.designerUid].hours += ts.hours || 0;
+                }
             });
 
             const projects = Object.values(projectHours);
@@ -143,6 +164,18 @@ timesheetsRouter.get('/', async (req, res) => {
                 projectsWorkedOn: d.projectsWorkedOn.size,
             }));
 
+            // Section-wise breakdown
+            const initRevenueByCurrency = () => ({ USD: 0, GBP: 0, CAD: 0, AUD: 0 });
+            const sectionBreakdown = {
+                Engineering: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] },
+                Rebar: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] },
+                Structural: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] },
+                Unassigned: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] }
+            };
+
+            // Total revenue by currency
+            const totalRevenueByCurrency = { USD: 0, GBP: 0, CAD: 0, AUD: 0 };
+
             let metrics = {
                 totalProjects: projects.length,
                 projectsWithTimeline: 0,
@@ -150,6 +183,7 @@ timesheetsRouter.get('/', async (req, res) => {
                 totalExceededHours: 0,
                 totalAllocatedHours: 0,
                 totalLoggedHours: 0,
+                totalRevenue: 0,
             };
 
             let analytics = {
@@ -162,14 +196,43 @@ timesheetsRouter.get('/', async (req, res) => {
             projects.forEach(p => {
                 const statusKey = p.status || 'unknown';
                 analytics.projectStatusDistribution[statusKey] = (analytics.projectStatusDistribution[statusKey] || 0) + 1;
-                
+
+                // Section breakdown
+                const section = sectionBreakdown[p.projectSection] || sectionBreakdown['Unassigned'];
+                section.count++;
+                section.revenue += p.quoteValue || 0;
+                section.hoursAllocated += p.allocatedHours || 0;
+                section.hoursLogged += p.hoursLogged || 0;
+
+                // Revenue by currency (normalize currency key)
+                const rawCurrency = (p.currency || 'USD').toUpperCase().trim();
+                const currencyKey = rawCurrency === 'AED' ? 'AED'
+                    : rawCurrency === 'POUNDS' || rawCurrency === 'GBP' ? 'GBP'
+                    : rawCurrency === 'AUS' || rawCurrency === 'AUD' || rawCurrency === 'AUS CAD' ? 'AUD'
+                    : rawCurrency === 'CAD' ? 'CAD'
+                    : rawCurrency;
+                // Add to section currency breakdown
+                if (!section.revenueByCurrency[currencyKey]) section.revenueByCurrency[currencyKey] = 0;
+                section.revenueByCurrency[currencyKey] += p.quoteValue || 0;
+                // Add to total currency breakdown
+                if (!totalRevenueByCurrency[currencyKey]) totalRevenueByCurrency[currencyKey] = 0;
+                totalRevenueByCurrency[currencyKey] += p.quoteValue || 0;
+
+                // Total revenue
+                metrics.totalRevenue += p.quoteValue || 0;
+
+                // Attach per-project designer hours
+                p.designerHoursDetail = projectDesignerHours[p.id]
+                    ? Object.values(projectDesignerHours[p.id])
+                    : [];
+
                 if (p.allocatedHours > 0) {
                     metrics.projectsWithTimeline += 1;
                     metrics.totalAllocatedHours += p.allocatedHours;
                     metrics.totalLoggedHours += p.hoursLogged;
 
                     p.percentageUsed = p.allocatedHours > 0 ? (p.hoursLogged / p.allocatedHours * 100) : 0;
-                    
+
                     if (p.hoursLogged > p.allocatedHours) {
                         p.isExceeded = true;
                         p.exceededBy = p.hoursLogged - p.allocatedHours;
@@ -192,7 +255,7 @@ timesheetsRouter.get('/', async (req, res) => {
 
             return res.status(200).json({
                 success: true,
-                data: { metrics, projects, designers: designers.map(d => ({
+                data: { metrics, projects, sectionBreakdown, totalRevenueByCurrency, designers: designers.map(d => ({
                     name: d.name, email: d.email, totalHours: d.totalHours, projectsWorkedOn: d.projectsWorkedOn,
                 })), analytics }
             });
