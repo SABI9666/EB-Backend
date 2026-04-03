@@ -261,10 +261,39 @@ timesheetsRouter.get('/', async (req, res) => {
                     metrics.totalRevenue += p.quoteValue || 0;
                 }
 
-                // Attach per-project designer hours
-                p.designerHoursDetail = projectDesignerHours[p.id]
-                    ? Object.values(projectDesignerHours[p.id])
-                    : [];
+                // Attach per-project designer hours with allocated hours
+                const loggedMap = projectDesignerHours[p.id] || {};
+                const allocMap = p.designerHours || {};
+                const designerNames = p.assignedDesignerNames || [];
+                const designerUids = p.assignedDesigners || [];
+                // Merge allocated and logged hours for each designer
+                const mergedDesigners = {};
+                // Add designers from allocation map
+                Object.entries(allocMap).forEach(([uid, allocHrs]) => {
+                    const idx = designerUids.indexOf(uid);
+                    const name = idx >= 0 && designerNames[idx] ? designerNames[idx] : (allDesigners[uid] ? allDesigners[uid].name : 'Unknown');
+                    mergedDesigners[uid] = {
+                        name: name,
+                        allocatedHours: parseFloat(allocHrs) || 0,
+                        hoursLogged: 0
+                    };
+                });
+                // Add/update from logged hours
+                Object.entries(loggedMap).forEach(([uid, detail]) => {
+                    if (mergedDesigners[uid]) {
+                        mergedDesigners[uid].hoursLogged = detail.hours || 0;
+                        if (!mergedDesigners[uid].name || mergedDesigners[uid].name === 'Unknown') {
+                            mergedDesigners[uid].name = detail.name;
+                        }
+                    } else {
+                        mergedDesigners[uid] = {
+                            name: detail.name || 'Unknown',
+                            allocatedHours: 0,
+                            hoursLogged: detail.hours || 0
+                        };
+                    }
+                });
+                p.designerHoursDetail = Object.values(mergedDesigners);
 
                 if (p.allocatedHours > 0) {
                     metrics.projectsWithTimeline += 1;
