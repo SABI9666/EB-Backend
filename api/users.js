@@ -95,9 +95,11 @@ const handler = async (req, res) => {
             
             const snapshot = await query.get();
             const users = [];
-            
+            const addedUids = new Set();
+
             snapshot.docs.forEach(doc => {
                 const userData = doc.data();
+                addedUids.add(doc.id);
                 // Don't send sensitive data
                 users.push({
                     uid: doc.id,
@@ -116,6 +118,41 @@ const handler = async (req, res) => {
                     })
                 });
             });
+
+            // When fetching design_lead role, also include known design lead emails
+            // that may still have 'designer' role in Firestore (force-mapped on frontend)
+            if (role === 'design_lead') {
+                const DESIGN_LEAD_EMAILS = [
+                    'muruganantham.tech@edanbrook.in',
+                    'kathar.tech@edanbrook.in',
+                    'aravindhan.tech@edanbrook.in',
+                    'sathish.tech@edanbrook.in',
+                    'rebar.lead@edanbrook.com',
+                    'rebar.lead1@edanbrook.com'
+                ];
+                // Fetch all active users and check emails
+                const allUsersSnapshot = await db.collection('users')
+                    .where('status', '==', 'active')
+                    .get();
+                allUsersSnapshot.docs.forEach(doc => {
+                    if (addedUids.has(doc.id)) return; // Skip already added
+                    const userData = doc.data();
+                    const email = (userData.email || '').toLowerCase().trim();
+                    if (DESIGN_LEAD_EMAILS.includes(email)) {
+                        addedUids.add(doc.id);
+                        users.push({
+                            uid: doc.id,
+                            name: userData.name,
+                            email: userData.email,
+                            role: 'design_lead', // Override to design_lead
+                            status: userData.status || 'active',
+                            department: userData.department || '',
+                            joinDate: userData.joinDate || null,
+                            activeProjects: userData.activeProjects || 0
+                        });
+                    }
+                });
+            }
             
             // Sort users by name
             users.sort((a, b) => a.name.localeCompare(b.name));
