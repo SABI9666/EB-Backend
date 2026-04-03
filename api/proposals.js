@@ -690,7 +690,44 @@ const handler = async (req, res) => {
                     };
                     activityDetail = `Project allocated to Design Manager: ${data.designLeadName}`;
                     break;
-                    
+
+                case 'mark_subcontractor':
+                    if (req.user.role !== 'estimator') {
+                        return res.status(403).json({ success: false, error: 'Only Estimators can mark proposals as subcontractor' });
+                    }
+
+                    const subcontractorName = (data && data.subcontractorName) ? data.subcontractorName.trim() : '';
+                    if (!subcontractorName) {
+                        return res.status(400).json({ success: false, error: 'Subcontractor name is required' });
+                    }
+
+                    updates = {
+                        subcontractor: true,
+                        subcontractorDetails: {
+                            name: subcontractorName,
+                            notes: (data && data.notes) ? data.notes : '',
+                            markedBy: req.user.email,
+                            markedByName: req.user.name,
+                            markedAt: admin.firestore.FieldValue.serverTimestamp()
+                        },
+                        status: 'subcontracted'
+                    };
+                    activityDetail = `Proposal marked as subcontractor project — Subcontractor: ${subcontractorName}`;
+
+                    // Notify COO about subcontractor assignment
+                    try {
+                        await db.collection('notifications').add({
+                            type: 'subcontractor_assigned',
+                            recipientRole: 'coo',
+                            proposalId: id,
+                            message: `"${proposal.projectName}" marked as subcontractor project (${subcontractorName}) by ${req.user.name}`,
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false,
+                            priority: 'normal'
+                        });
+                    } catch (e) { console.error('Error creating subcontractor notification:', e.message); }
+                    break;
+
                 default:
                     return res.status(400).json({ success: false, error: 'Invalid action: ' + action });
             }
