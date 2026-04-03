@@ -464,36 +464,95 @@ timesheetsRouter.get('/', async (req, res) => {
         if (!['coo', 'director', 'hr'].includes(userRole)) {
             return res.status(403).json({ success: false, error: 'Access denied. COO/Director/HR only.' });
         }
-        
+
         try {
             const timesheetsSnapshot = await db.collection('timesheets').get();
             const designersSnapshot = await db.collection('users').where('role', '==', 'designer').get();
-            
+            const projectsSnapshot = await db.collection('projects').get();
+
             const designerLookup = {};
             designersSnapshot.forEach(doc => {
                 const data = doc.data();
                 designerLookup[doc.id] = { uid: doc.id, name: data.name, email: data.email };
             });
-            
+
+            // Build project lookup for names/codes
+            const projectLookup = {};
+            projectsSnapshot.forEach(doc => {
+                const data = doc.data();
+                projectLookup[doc.id] = {
+                    projectName: data.projectName || 'Unknown',
+                    projectCode: data.projectCode || '',
+                    clientCompany: data.clientCompany || '',
+                    projectSection: data.projectSection || 'Unassigned',
+                    designLeadName: data.designLeadName || '',
+                    maxAllocatedHours: data.maxAllocatedHours || 0,
+                    quoteValue: parseFloat(data.quoteValue) || 0,
+                    currency: data.currency || 'USD'
+                };
+            });
+
             const designerMap = {};
             const weeklyBreakdown = {};
             const monthlyBreakdown = {};
-            
+            // Project-based tracking
+            const projectMap = {};
+
             timesheetsSnapshot.forEach(doc => {
                 const entry = doc.data();
                 const dUid = entry.designerUid;
                 const designerName = entry.designerName || designerLookup[dUid]?.name || 'Unknown';
                 const designerEmail = entry.designerEmail || designerLookup[dUid]?.email || '';
                 const hours = parseFloat(entry.hours) || 0;
-                
+                const projectId = entry.projectId || 'UNKNOWN';
+                const projectName = entry.projectName || projectLookup[projectId]?.projectName || 'Unknown Project';
+
                 const entryDate = parseDate(entry.date);
                 if (!entryDate || isNaN(entryDate.getTime())) return;
-                
+
                 const weekStart = getWeekStart(entryDate);
                 const weekKey = weekStart.toISOString().split('T')[0];
                 const monthStart = getMonthStart(entryDate);
                 const monthKey = monthStart.toISOString().split('T')[0];
                 const dayKey = entryDate.toISOString().split('T')[0];
+
+                // --- Project-based tracking ---
+                if (!projectMap[projectId]) {
+                    const pInfo = projectLookup[projectId] || {};
+                    projectMap[projectId] = {
+                        projectId,
+                        projectName: pInfo.projectName || projectName,
+                        projectCode: pInfo.projectCode || '',
+                        clientCompany: pInfo.clientCompany || '',
+                        projectSection: pInfo.projectSection || 'Unassigned',
+                        designLeadName: pInfo.designLeadName || '',
+                        maxAllocatedHours: pInfo.maxAllocatedHours || 0,
+                        quoteValue: pInfo.quoteValue || 0,
+                        currency: pInfo.currency || 'USD',
+                        totalHours: 0,
+                        designers: {},
+                        monthlyHours: {},
+                        weeklyHours: {}
+                    };
+                }
+                projectMap[projectId].totalHours += hours;
+
+                // Per-designer within project
+                if (!projectMap[projectId].designers[dUid]) {
+                    projectMap[projectId].designers[dUid] = {
+                        name: designerName,
+                        email: designerEmail,
+                        totalHours: 0,
+                        monthlyHours: {}
+                    };
+                }
+                projectMap[projectId].designers[dUid].totalHours += hours;
+                projectMap[projectId].designers[dUid].monthlyHours[monthKey] = (projectMap[projectId].designers[dUid].monthlyHours[monthKey] || 0) + hours;
+
+                // Project monthly total
+                projectMap[projectId].monthlyHours[monthKey] = (projectMap[projectId].monthlyHours[monthKey] || 0) + hours;
+                // Project weekly total
+                projectMap[projectId].weeklyHours[weekKey] = (projectMap[projectId].weeklyHours[weekKey] || 0) + hours;
                 
                 if (!designerMap[dUid]) {
                     designerMap[dUid] = {
@@ -585,16 +644,38 @@ timesheetsRouter.get('/', async (req, res) => {
             const summary = {
                 totalDesigners: designerStats.length,
                 totalHoursAllTime: Math.round(designerStats.reduce((sum, d) => sum + d.totalHours, 0) * 100) / 100,
-                avgHoursPerDesigner: designerStats.length > 0 
+                avgHoursPerDesigner: designerStats.length > 0
                     ? Math.round((designerStats.reduce((sum, d) => sum + d.totalHours, 0) / designerStats.length) * 100) / 100
                     : 0,
                 weeksTracked: weeklyTotals.length,
                 monthsTracked: monthlyTotals.length
             };
-            
+
+            // Build project-based report
+            const allMonthKeys = [...new Set(Object.values(projectMap).flatMap(p => Object.keys(p.monthlyHours)))].sort();
+            const projectReport = Object.values(projectMap).map(p => ({
+                projectId: p.projectId,
+                projectName: p.projectName,
+                projectCode: p.projectCode,
+                clientCompany: p.clientCompany,
+                projectSection: p.projectSection,
+                designLeadName: p.designLeadName,
+                maxAllocatedHours: p.maxAllocatedHours,
+                quoteValue: p.quoteValue,
+                currency: p.currency,
+                totalHours: Math.round(p.totalHours * 100) / 100,
+                monthlyHours: p.monthlyHours,
+                designers: Object.values(p.designers).map(d => ({
+                    name: d.name,
+                    email: d.email,
+                    totalHours: Math.round(d.totalHours * 100) / 100,
+                    monthlyHours: d.monthlyHours
+                })).sort((a, b) => b.totalHours - a.totalHours)
+            })).sort((a, b) => b.totalHours - a.totalHours);
+
             return res.status(200).json({
                 success: true,
-                data: { designers: designerStats, weeklyTotals, monthlyTotals, summary }
+                data: { designers: designerStats, weeklyTotals, monthlyTotals, summary, projectReport, allMonthKeys }
             });
             
         } catch (error) {
