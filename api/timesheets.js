@@ -107,6 +107,8 @@ timesheetsRouter.get('/', async (req, res) => {
             const projectsSnapshot = await db.collection('projects').get();
             const timesheetsSnapshot = await db.collection('timesheets').get();
             const designersSnapshot = await db.collection('users').where('role', '==', 'designer').get();
+            // Fetch subcontracted proposals
+            const subcontractedSnapshot = await db.collection('proposals').where('status', '==', 'subcontracted').get();
 
             let allTimesheets = [];
             timesheetsSnapshot.forEach(doc => allTimesheets.push({ id: doc.id, ...doc.data() }));
@@ -114,6 +116,33 @@ timesheetsRouter.get('/', async (req, res) => {
             let allDesigners = {};
             designersSnapshot.forEach(doc => {
                 allDesigners[doc.id] = { id: doc.id, ...doc.data(), totalHours: 0, projectsWorkedOn: new Set() };
+            });
+
+            // Build subcontractor data
+            const subcontractorProjects = [];
+            const subcontractorRevenueByCurrency = { USD: 0, GBP: 0, CAD: 0, AUD: 0 };
+            let totalSubcontractorRevenue = 0;
+            subcontractedSnapshot.forEach(doc => {
+                const data = doc.data();
+                const val = parseFloat(data.pricing?.quoteValue) || 0;
+                const rawCurrency = (data.pricing?.currency || 'USD').toUpperCase().trim();
+                const cur = rawCurrency === 'POUNDS' || rawCurrency === 'GBP' ? 'GBP'
+                    : rawCurrency === 'AUS' || rawCurrency === 'AUD' ? 'AUD'
+                    : rawCurrency === 'CAD' ? 'CAD'
+                    : rawCurrency === 'USD' ? 'USD'
+                    : rawCurrency;
+                if (!subcontractorRevenueByCurrency[cur]) subcontractorRevenueByCurrency[cur] = 0;
+                subcontractorRevenueByCurrency[cur] += val;
+                totalSubcontractorRevenue += val;
+                subcontractorProjects.push({
+                    projectName: data.projectName || 'N/A',
+                    clientCompany: data.clientCompany || 'N/A',
+                    quoteValue: val,
+                    currency: cur,
+                    subcontractorName: data.subcontractorDetails?.name || 'N/A',
+                    subcontractorNotes: data.subcontractorDetails?.notes || '',
+                    status: 'subcontracted'
+                });
             });
 
             let projectHours = {};
@@ -127,6 +156,7 @@ timesheetsRouter.get('/', async (req, res) => {
                     projectSection: data.projectSection || 'Unassigned',
                     quoteValue: parseFloat(data.quoteValue) || 0,
                     currency: data.currency || 'AED',
+                    isAllocated: data.designStatus === 'allocated' || data.status === 'assigned' || data.status === 'in_progress' || data.status === 'completed',
                 };
             });
 
@@ -164,7 +194,7 @@ timesheetsRouter.get('/', async (req, res) => {
                 projectsWorkedOn: d.projectsWorkedOn.size,
             }));
 
-            // Section-wise breakdown
+            // Section-wise breakdown (only allocated projects)
             const initRevenueByCurrency = () => ({ USD: 0, GBP: 0, CAD: 0, AUD: 0 });
             const sectionBreakdown = {
                 Engineering: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] },
@@ -173,17 +203,24 @@ timesheetsRouter.get('/', async (req, res) => {
                 Unassigned: { count: 0, revenue: 0, revenueByCurrency: initRevenueByCurrency(), hoursAllocated: 0, hoursLogged: 0, projects: [] }
             };
 
-            // Total revenue by currency
+            // Total revenue by currency (only allocated projects)
             const totalRevenueByCurrency = { USD: 0, GBP: 0, CAD: 0, AUD: 0 };
+
+            // Count allocated projects
+            const allocatedProjects = projects.filter(p => p.isAllocated);
 
             let metrics = {
                 totalProjects: projects.length,
+                allocatedProjects: allocatedProjects.length,
+                pendingAllocationProjects: projects.length - allocatedProjects.length,
+                subcontractorProjects: subcontractorProjects.length,
                 projectsWithTimeline: 0,
                 projectsAboveTimeline: 0,
                 totalExceededHours: 0,
                 totalAllocatedHours: 0,
                 totalLoggedHours: 0,
                 totalRevenue: 0,
+                totalSubcontractorRevenue: totalSubcontractorRevenue,
             };
 
             let analytics = {
@@ -197,29 +234,32 @@ timesheetsRouter.get('/', async (req, res) => {
                 const statusKey = p.status || 'unknown';
                 analytics.projectStatusDistribution[statusKey] = (analytics.projectStatusDistribution[statusKey] || 0) + 1;
 
-                // Section breakdown
-                const section = sectionBreakdown[p.projectSection] || sectionBreakdown['Unassigned'];
-                section.count++;
-                section.revenue += p.quoteValue || 0;
-                section.hoursAllocated += p.allocatedHours || 0;
-                section.hoursLogged += p.hoursLogged || 0;
-
-                // Revenue by currency (normalize currency key)
+                // Normalize currency key
                 const rawCurrency = (p.currency || 'USD').toUpperCase().trim();
                 const currencyKey = rawCurrency === 'AED' ? 'AED'
                     : rawCurrency === 'POUNDS' || rawCurrency === 'GBP' ? 'GBP'
                     : rawCurrency === 'AUS' || rawCurrency === 'AUD' || rawCurrency === 'AUS CAD' ? 'AUD'
                     : rawCurrency === 'CAD' ? 'CAD'
                     : rawCurrency;
-                // Add to section currency breakdown
-                if (!section.revenueByCurrency[currencyKey]) section.revenueByCurrency[currencyKey] = 0;
-                section.revenueByCurrency[currencyKey] += p.quoteValue || 0;
-                // Add to total currency breakdown
-                if (!totalRevenueByCurrency[currencyKey]) totalRevenueByCurrency[currencyKey] = 0;
-                totalRevenueByCurrency[currencyKey] += p.quoteValue || 0;
 
-                // Total revenue
-                metrics.totalRevenue += p.quoteValue || 0;
+                // Only include allocated projects in section breakdown and revenue
+                if (p.isAllocated) {
+                    const section = sectionBreakdown[p.projectSection] || sectionBreakdown['Unassigned'];
+                    section.count++;
+                    section.revenue += p.quoteValue || 0;
+                    section.hoursAllocated += p.allocatedHours || 0;
+                    section.hoursLogged += p.hoursLogged || 0;
+
+                    // Add to section currency breakdown
+                    if (!section.revenueByCurrency[currencyKey]) section.revenueByCurrency[currencyKey] = 0;
+                    section.revenueByCurrency[currencyKey] += p.quoteValue || 0;
+                    // Add to total currency breakdown
+                    if (!totalRevenueByCurrency[currencyKey]) totalRevenueByCurrency[currencyKey] = 0;
+                    totalRevenueByCurrency[currencyKey] += p.quoteValue || 0;
+
+                    // Total revenue (allocated only)
+                    metrics.totalRevenue += p.quoteValue || 0;
+                }
 
                 // Attach per-project designer hours
                 p.designerHoursDetail = projectDesignerHours[p.id]
@@ -299,9 +339,10 @@ timesheetsRouter.get('/', async (req, res) => {
                 yearlyRevenue[y] = { label: String(y), revenue: initCurrMap(), count: 0 };
             }
 
-            // Populate period revenue from projects
+            // Populate period revenue from allocated projects only
             projects.forEach(p => {
-                const projectDate = toDate(p.createdAt) || toDate(p.allocationDate);
+                if (!p.isAllocated) return; // Skip non-allocated projects
+                const projectDate = toDate(p.allocationDate) || toDate(p.createdAt);
                 if (!projectDate) return;
 
                 const pYear = projectDate.getFullYear();
@@ -349,7 +390,14 @@ timesheetsRouter.get('/', async (req, res) => {
 
             return res.status(200).json({
                 success: true,
-                data: { metrics, projects, sectionBreakdown, totalRevenueByCurrency, revenuePeriods, designers: designers.map(d => ({
+                data: { metrics, projects, sectionBreakdown, totalRevenueByCurrency, revenuePeriods,
+                    subcontractorData: {
+                        projects: subcontractorProjects,
+                        revenueByCurrency: subcontractorRevenueByCurrency,
+                        totalRevenue: totalSubcontractorRevenue,
+                        count: subcontractorProjects.length
+                    },
+                    designers: designers.map(d => ({
                     name: d.name, email: d.email, totalHours: d.totalHours, projectsWorkedOn: d.projectsWorkedOn,
                 })), analytics }
             });
