@@ -196,6 +196,15 @@ try {
     console.log('  Loading forgot-password...');
     const forgotPasswordHandler = require('./api/forgot-password');
 
+    console.log('  Loading subventors...');
+    const subventorsHandler = require('./api/subventors');
+
+    console.log('  Loading daily-expenses...');
+    const dailyExpensesHandler = require('./api/daily-expenses');
+
+    console.log('  Loading gst-filing...');
+    const gstFilingHandler = require('./api/gst-filing');
+
     console.log('✅ All handlers loaded successfully');
 
     // Register routes
@@ -234,6 +243,9 @@ try {
     app.use('/api/it-tickets', itTicketsHandler);
     app.use('/api/migrate-user', migrateUserHandler);
     app.use('/api/forgot-password', forgotPasswordHandler);
+    app.use('/api/subventors', subventorsHandler);
+    app.use('/api/daily-expenses', dailyExpensesHandler);
+    app.use('/api/gst-filing', gstFilingHandler);
 
     console.log('✅ All routes registered');
 
@@ -289,7 +301,10 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('   *    /api/timesheets');
     console.log('   *    /api/time-requests');
     console.log('   *    /api/screening');
-    console.log('   *    /api/it-tickets  ← NEW');
+    console.log('   *    /api/it-tickets');
+    console.log('   *    /api/subventors');
+    console.log('   *    /api/daily-expenses');
+    console.log('   *    /api/gst-filing');
     console.log('');
 });
 
