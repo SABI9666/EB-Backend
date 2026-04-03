@@ -205,6 +205,9 @@ try {
     console.log('  Loading gst-filing...');
     const gstFilingHandler = require('./api/gst-filing');
 
+    console.log('  Loading petty-cash...');
+    const pettyCashHandler = require('./api/petty-cash');
+
     console.log('✅ All handlers loaded successfully');
 
     // Register routes
@@ -246,6 +249,7 @@ try {
     app.use('/api/subventors', subventorsHandler);
     app.use('/api/daily-expenses', dailyExpensesHandler);
     app.use('/api/gst-filing', gstFilingHandler);
+    app.use('/api/petty-cash', pettyCashHandler);
 
     console.log('✅ All routes registered');
 
