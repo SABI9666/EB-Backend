@@ -114,18 +114,30 @@ const handler = async (req, res) => {
                 proposals = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             }
             else if (req.user.role === 'design_lead') {
-                const projectsSnapshot = await db.collection('projects')
+                // Query projects by designLeadUid
+                const leadSnapshot = await db.collection('projects')
                     .where('designLeadUid', '==', req.user.uid)
                     .get();
-                
-                const proposalIds = projectsSnapshot.docs
-                    .map(doc => doc.data().proposalId)
+
+                // Also query projects where design lead is in assignedDesignerUids
+                const assignedSnapshot = await db.collection('projects')
+                    .where('assignedDesignerUids', 'array-contains', req.user.uid)
+                    .get();
+
+                // Merge and deduplicate by project id
+                const projectMap = new Map();
+                leadSnapshot.docs.forEach(doc => projectMap.set(doc.id, doc.data()));
+                assignedSnapshot.docs.forEach(doc => projectMap.set(doc.id, doc.data()));
+
+                const proposalIds = Array.from(projectMap.values())
+                    .map(p => p.proposalId)
                     .filter(id => id);
 
                 if (proposalIds.length > 0) {
+                    const uniqueIds = [...new Set(proposalIds)];
                     const batchSize = 10;
-                    for (let i = 0; i < proposalIds.length; i += batchSize) {
-                        const batch = proposalIds.slice(i, i + batchSize);
+                    for (let i = 0; i < uniqueIds.length; i += batchSize) {
+                        const batch = uniqueIds.slice(i, i + batchSize);
                         const proposalsSnapshot = await db.collection('proposals')
                             .where(admin.firestore.FieldPath.documentId(), 'in', batch)
                             .get();

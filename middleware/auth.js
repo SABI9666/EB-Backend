@@ -95,11 +95,12 @@ async function checkProjectAccess(req, res, next) {
                 break;
                 
             case 'design_lead':
-                // Design leads can only access projects assigned to them
-                if (project.designLeadUid !== req.user.uid) {
-                    return res.status(403).json({ 
-                        success: false, 
-                        error: 'This project is not assigned to you' 
+                // Design leads can access projects assigned to them via designLeadUid or assignedDesignerUids
+                if (project.designLeadUid !== req.user.uid &&
+                    !(project.assignedDesignerUids && project.assignedDesignerUids.includes(req.user.uid))) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'This project is not assigned to you'
                     });
                 }
                 break;
