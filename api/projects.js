@@ -1504,6 +1504,136 @@ const handler = async (req, res) => {
             // ============================================
 
             // ============================================
+            // Update P.O. & Project Contacts (Standalone Edit)
+            // ============================================
+            else if (action === 'update_po_contacts') {
+                if (!['coo', 'director'].includes(req.user.role)) {
+                    return res.status(403).json({ success: false, error: 'Only COO or Director can update P.O. & contacts' });
+                }
+
+                const { poNumber, poValue, poCurrency, poFileBase64, poFileName, projectContacts } = data;
+
+                updates = {};
+
+                // P.O. fields
+                if (poNumber !== undefined) updates.poNumber = poNumber;
+                if (poValue) {
+                    updates.poValue = parseFloat(poValue);
+                    updates.poCurrency = poCurrency || 'USD';
+                }
+
+                // Upload P.O. PDF if provided
+                if (poFileBase64 && poFileName) {
+                    try {
+                        const bucket = admin.storage().bucket();
+                        const storagePath = `project-po/${id}/${Date.now()}_${poFileName}`;
+                        const file = bucket.file(storagePath);
+                        const buffer = Buffer.from(poFileBase64, 'base64');
+                        await file.save(buffer, { metadata: { contentType: 'application/pdf' } });
+                        await file.makePublic();
+                        updates.poFileUrl = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
+                        updates.poFileName = poFileName;
+                    } catch (poUploadErr) {
+                        console.error('❌ P.O. file upload failed:', poUploadErr);
+                    }
+                }
+
+                // Contacts
+                if (projectContacts) {
+                    updates.projectContacts = projectContacts;
+                }
+
+                // Notify Accounts & HR about P.O. update
+                if (poValue || (poFileBase64 && poFileName)) {
+                    const poMsg = `P.O. updated for project "${project.projectName}"${poNumber ? ' (' + poNumber + ')' : ''}${poValue ? '. Value: ' + (poCurrency || 'USD') + ' ' + parseFloat(poValue).toLocaleString() : ''}. Updated by ${req.user.name}.`;
+                    notifications.push({
+                        type: 'po_uploaded',
+                        recipientRole: 'accounts',
+                        message: poMsg,
+                        projectId: id,
+                        projectName: project.projectName,
+                        priority: 'high'
+                    });
+                    notifications.push({
+                        type: 'po_uploaded',
+                        recipientRole: 'hr',
+                        message: poMsg,
+                        projectId: id,
+                        projectName: project.projectName,
+                        priority: 'normal'
+                    });
+
+                    try {
+                        await sendEmailNotification('allocation.po_uploaded', {
+                            projectName: project.projectName,
+                            projectCode: project.projectNumber || '',
+                            clientCompany: project.clientCompany || '',
+                            poNumber: poNumber || 'N/A',
+                            poValue: poValue ? parseFloat(poValue).toLocaleString() : 'N/A',
+                            poCurrency: poCurrency || 'USD',
+                            poFileName: poFileName || null,
+                            submittedBy: req.user.name
+                        });
+                    } catch (emailErr) {
+                        console.error('❌ P.O. email failed:', emailErr);
+                    }
+                }
+
+                // Notify DC & Accounts about contacts update
+                if (projectContacts) {
+                    const tech = projectContacts.technical || {};
+                    const comm = projectContacts.commercial || {};
+                    const hasContacts = tech.bdmName || tech.clientPmName || comm.accountName || comm.bdmName;
+
+                    if (hasContacts) {
+                        const contactMsg = `Project contacts updated for "${project.projectName}" by ${req.user.name}.`;
+                        notifications.push({
+                            type: 'project_contacts_added',
+                            recipientRole: 'document_controller',
+                            message: contactMsg,
+                            projectId: id,
+                            projectName: project.projectName,
+                            projectContacts: projectContacts,
+                            priority: 'normal'
+                        });
+                        notifications.push({
+                            type: 'project_contacts_added',
+                            recipientRole: 'accounts',
+                            message: contactMsg,
+                            projectId: id,
+                            projectName: project.projectName,
+                            projectContacts: projectContacts,
+                            priority: 'normal'
+                        });
+
+                        try {
+                            await sendEmailNotification('allocation.contacts_added', {
+                                projectName: project.projectName,
+                                projectCode: project.projectNumber || '',
+                                clientCompany: project.clientCompany || '',
+                                techBdmName: tech.bdmName || 'N/A',
+                                techBdmEmail: tech.bdmEmail || 'N/A',
+                                techClientPmName: tech.clientPmName || 'N/A',
+                                techClientPmEmail: tech.clientPmEmail || 'N/A',
+                                commAccountName: comm.accountName || 'N/A',
+                                commAccountEmail: comm.accountEmail || 'N/A',
+                                commBdmName: comm.bdmName || 'N/A',
+                                commBdmEmail: comm.bdmEmail || 'N/A',
+                                submittedBy: req.user.name
+                            });
+                        } catch (emailErr) {
+                            console.error('❌ Contacts email failed:', emailErr);
+                        }
+                    }
+                }
+
+                activityDetail = `P.O. & Contacts updated for "${project.projectName}" by ${req.user.name}.`;
+            }
+            // ============================================
+            // END: Update P.O. & Contacts
+            // ============================================
+
+            // ============================================
             // DESIGN FILE WORKFLOW - Upload Design File
             // ============================================
             else if (action === 'upload_design_file') {
