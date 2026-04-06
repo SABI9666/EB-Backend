@@ -1002,14 +1002,20 @@ const handler = async (req, res) => {
                     return res.status(403).json({ success: false, error: 'Permission denied' });
                 }
 
-                const { 
+                const {
                     maxAllocatedHours,     // The Budget (New or Locked)
                     maxHoursSource,        // The Source (New or Locked)
                     totalAllocatedHours,   // The Sum of Assignments (Prev + Current)
                     designerAllocations,   // The New Array of assignments for this session
                     targetCompletionDate,
                     priority,
-                    allocationNotes
+                    allocationNotes,
+                    // Purchase Order (P.O.) fields
+                    poNumber,
+                    poValue,
+                    poCurrency,
+                    poFileBase64,
+                    poFileName
                 } = data;
                 
                 // ✅ CRITICAL FIX: Validate budget not exceeded
@@ -1149,8 +1155,87 @@ const handler = async (req, res) => {
                     updates.allocatedBy = req.user.name;
                     updates.allocatedByUid = req.user.uid;
                 }
-                
-                activityDetail = `COO Multi-Designer allocation performed by ${req.user.name}. Total allocated hours: ${parseFloat(totalAllocatedHours).toFixed(1)}. Status: ${allocStatus.replace('_', ' ')}.`;
+
+                // ============================================
+                // P.O. (Purchase Order) Handling
+                // ============================================
+                if (poNumber) updates.poNumber = poNumber;
+                if (poValue) {
+                    updates.poValue = parseFloat(poValue);
+                    updates.poCurrency = poCurrency || 'USD';
+                }
+
+                // Upload P.O. PDF to Firebase Storage if provided
+                if (poFileBase64 && poFileName) {
+                    try {
+                        const bucket = admin.storage().bucket();
+                        const storagePath = `project-po/${id}/${Date.now()}_${poFileName}`;
+                        const file = bucket.file(storagePath);
+                        const buffer = Buffer.from(poFileBase64, 'base64');
+                        await file.save(buffer, { metadata: { contentType: 'application/pdf' } });
+                        await file.makePublic();
+                        const poFileUrl = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
+                        updates.poFileUrl = poFileUrl;
+                        updates.poFileName = poFileName;
+                        console.log(`📄 P.O. file uploaded: ${poFileUrl}`);
+                    } catch (poUploadErr) {
+                        console.error('❌ P.O. file upload failed:', poUploadErr);
+                        // Continue without file - don't block allocation
+                    }
+                }
+
+                // Notify Accounts & HR about P.O.
+                if (poValue || (poFileBase64 && poFileName)) {
+                    const poNotifMsg = `Purchase Order ${poNumber ? '(' + poNumber + ') ' : ''}added for project "${project.projectName}"${poValue ? '. Value: ' + (poCurrency || 'USD') + ' ' + parseFloat(poValue).toLocaleString() : ''}. Submitted by ${req.user.name}.`;
+
+                    // Notify Accounts
+                    notifications.push({
+                        type: 'po_uploaded',
+                        recipientRole: 'accounts',
+                        message: poNotifMsg,
+                        projectId: id,
+                        projectName: project.projectName,
+                        poNumber: poNumber || null,
+                        poValue: poValue ? parseFloat(poValue) : null,
+                        poCurrency: poCurrency || 'USD',
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false,
+                        priority: 'high'
+                    });
+
+                    // Notify HR
+                    notifications.push({
+                        type: 'po_uploaded',
+                        recipientRole: 'hr',
+                        message: poNotifMsg,
+                        projectId: id,
+                        projectName: project.projectName,
+                        poNumber: poNumber || null,
+                        poValue: poValue ? parseFloat(poValue) : null,
+                        poCurrency: poCurrency || 'USD',
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false,
+                        priority: 'normal'
+                    });
+
+                    // Send email to Accounts & HR
+                    try {
+                        await sendEmailNotification('allocation.po_uploaded', {
+                            projectName: project.projectName,
+                            projectCode: project.projectNumber || project.projectCode || '',
+                            clientCompany: project.clientCompany || '',
+                            poNumber: poNumber || 'N/A',
+                            poValue: poValue ? parseFloat(poValue).toLocaleString() : 'N/A',
+                            poCurrency: poCurrency || 'USD',
+                            poFileName: poFileName || null,
+                            submittedBy: req.user.name
+                        });
+                    } catch (emailErr) {
+                        console.error('❌ P.O. email notification failed:', emailErr);
+                    }
+                }
+
+                activityDetail = `COO Multi-Designer allocation performed by ${req.user.name}. Total allocated hours: ${parseFloat(totalAllocatedHours).toFixed(1)}. Status: ${allocStatus.replace('_', ' ')}.${poValue ? ' P.O. Value: ' + (poCurrency || 'USD') + ' ' + parseFloat(poValue).toLocaleString() : ''}`;
             }
             
             // ============================================

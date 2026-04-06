@@ -58,7 +58,10 @@ const EMAIL_RECIPIENT_MAP = {
   'design.submitted_for_approval': ['coo', 'director'], // Designer submits → COO/Director
   'design.approved': ['document_controller'],            // COO approves → DC notified + designer (dynamic)
   'design.rejected': [],                                // Dynamic - designer email
-  'design.sent_to_client': []                           // Dynamic - client email
+  'design.sent_to_client': [],                           // Dynamic - client email
+
+  // P.O. (Purchase Order) notification types
+  'allocation.po_uploaded': ['accounts', 'hr']           // P.O. uploaded during allocation → Accounts & HR
 };
 
 // ==========================================
@@ -953,6 +956,39 @@ const EMAIL_TEMPLATE_MAP = {
 </body>
 </html>
     `
+  },
+
+  // ============================================
+  // P.O. (Purchase Order) Uploaded Notification
+  // ============================================
+  'allocation.po_uploaded': {
+    subject: '📄 Purchase Order Added: {{projectName}}',
+    html: (data) => getEmailWrapper(`
+      <h2 style="margin: 0 0 20px 0; color: #1e293b; font-size: 20px;">Purchase Order Notification</h2>
+      <p style="margin: 0 0 15px 0; color: #475569; font-size: 15px; line-height: 1.6;">
+        A Purchase Order has been added during project allocation.
+      </p>
+      <div style="background: #f0f7ff; border-radius: 10px; padding: 20px; margin: 20px 0; border-left: 4px solid #2563eb;">
+        <h3 style="margin: 0 0 12px 0; color: #1e40af; font-size: 16px;">Project Details</h3>
+        <table cellspacing="0" cellpadding="4" style="width: 100%; font-size: 14px; color: #334155;">
+          <tr><td style="font-weight:600; width:140px;">Project:</td><td>${data.projectName || 'N/A'}</td></tr>
+          <tr><td style="font-weight:600;">Project Code:</td><td>${data.projectCode || 'N/A'}</td></tr>
+          <tr><td style="font-weight:600;">Client:</td><td>${data.clientCompany || 'N/A'}</td></tr>
+        </table>
+      </div>
+      <div style="background: #fef9e7; border-radius: 10px; padding: 20px; margin: 20px 0; border-left: 4px solid #f0c040;">
+        <h3 style="margin: 0 0 12px 0; color: #92400e; font-size: 16px;">Purchase Order Details</h3>
+        <table cellspacing="0" cellpadding="4" style="width: 100%; font-size: 14px; color: #334155;">
+          <tr><td style="font-weight:600; width:140px;">P.O. Number:</td><td>${data.poNumber || 'N/A'}</td></tr>
+          <tr><td style="font-weight:600;">P.O. Value:</td><td style="font-size: 18px; font-weight: 700; color: #065f46;">${data.poCurrency || ''} ${data.poValue || 'N/A'}</td></tr>
+          <tr><td style="font-weight:600;">Currency:</td><td>${data.poCurrency || 'N/A'}</td></tr>
+          ${data.poFileName ? '<tr><td style="font-weight:600;">P.O. Document:</td><td>' + data.poFileName + ' (PDF attached)</td></tr>' : ''}
+        </table>
+      </div>
+      <p style="margin: 20px 0 0 0; color: #475569; font-size: 14px;">
+        Submitted by: <strong>${data.submittedBy || 'COO'}</strong>
+      </p>
+    `)
   }
 };
 
