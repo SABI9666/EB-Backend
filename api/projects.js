@@ -888,16 +888,29 @@ const handler = async (req, res) => {
                     }
                 }
                 
+                // Build combined designer UIDs list (keep design lead from COO allocation + new designers)
+                const existingDesignerUids = project.assignedDesignerUids || [];
+                const newDesignerUids = validatedDesigners.map(d => d.uid);
+                const combinedUids = [...new Set([...existingDesignerUids, ...newDesignerUids])];
+
+                const existingDesignerNamesList = project.assignedDesignerNames || [];
+                const newDesignerNamesList = validatedDesigners.map(d => d.name);
+                const combinedNames = [...new Set([...existingDesignerNamesList, ...newDesignerNamesList])];
+
+                const existingDesignerEmailsList = project.assignedDesignerEmails || [];
+                const newDesignerEmailsList = validatedDesigners.map(d => d.email);
+                const combinedEmails = [...new Set([...existingDesignerEmailsList, ...newDesignerEmailsList])];
+
                 updates = {
-                    assignedDesigners: validatedDesigners.map(d => d.uid),
-                    assignedDesignerNames: validatedDesigners.map(d => d.name),
-                    assignedDesignerEmails: validatedDesigners.map(d => d.email),
+                    assignedDesigners: newDesignerUids,
+                    assignedDesignerUids: combinedUids,
+                    assignedDesignerNames: combinedNames,
+                    assignedDesignerEmails: combinedEmails,
                     assignmentDate: admin.firestore.FieldValue.serverTimestamp(),
                     assignedBy: req.user.name,
                     assignedByUid: req.user.uid,
                     assignedDesignerHours: designerHoursMap,
                     totalAllocatedHours: totalAllocatedHours,
-                    hoursLogged: 0,
                     status: 'in_progress',
                     designStatus: 'in_progress'
                 };
