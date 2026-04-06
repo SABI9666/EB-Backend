@@ -1015,7 +1015,9 @@ const handler = async (req, res) => {
                     poValue,
                     poCurrency,
                     poFileBase64,
-                    poFileName
+                    poFileName,
+                    // Project Contacts (Technical & Commercial)
+                    projectContacts
                 } = data;
                 
                 // ✅ CRITICAL FIX: Validate budget not exceeded
@@ -1232,6 +1234,72 @@ const handler = async (req, res) => {
                         });
                     } catch (emailErr) {
                         console.error('❌ P.O. email notification failed:', emailErr);
+                    }
+                }
+
+                // ============================================
+                // Project Contacts (Technical & Commercial) Handling
+                // ============================================
+                if (projectContacts) {
+                    updates.projectContacts = projectContacts;
+
+                    // Check if any contact info was provided
+                    const tech = projectContacts.technical || {};
+                    const comm = projectContacts.commercial || {};
+                    const hasContacts = tech.bdmName || tech.clientPmName || comm.accountName || comm.bdmName;
+
+                    if (hasContacts) {
+                        const contactMsg = `Project contacts added for "${project.projectName}" by ${req.user.name}. ` +
+                            (tech.bdmName ? `Tech BDM: ${tech.bdmName}. ` : '') +
+                            (tech.clientPmName ? `Client PM: ${tech.clientPmName}. ` : '') +
+                            (comm.accountName ? `Comm Account: ${comm.accountName}. ` : '') +
+                            (comm.bdmName ? `Comm BDM: ${comm.bdmName}.` : '');
+
+                        // Notify Document Controller
+                        notifications.push({
+                            type: 'project_contacts_added',
+                            recipientRole: 'document_controller',
+                            message: contactMsg,
+                            projectId: id,
+                            projectName: project.projectName,
+                            projectContacts: projectContacts,
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false,
+                            priority: 'normal'
+                        });
+
+                        // Notify Accounts
+                        notifications.push({
+                            type: 'project_contacts_added',
+                            recipientRole: 'accounts',
+                            message: contactMsg,
+                            projectId: id,
+                            projectName: project.projectName,
+                            projectContacts: projectContacts,
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false,
+                            priority: 'normal'
+                        });
+
+                        // Send email to DC & Accounts
+                        try {
+                            await sendEmailNotification('allocation.contacts_added', {
+                                projectName: project.projectName,
+                                projectCode: project.projectNumber || project.projectCode || '',
+                                clientCompany: project.clientCompany || '',
+                                techBdmName: tech.bdmName || 'N/A',
+                                techBdmEmail: tech.bdmEmail || 'N/A',
+                                techClientPmName: tech.clientPmName || 'N/A',
+                                techClientPmEmail: tech.clientPmEmail || 'N/A',
+                                commAccountName: comm.accountName || 'N/A',
+                                commAccountEmail: comm.accountEmail || 'N/A',
+                                commBdmName: comm.bdmName || 'N/A',
+                                commBdmEmail: comm.bdmEmail || 'N/A',
+                                submittedBy: req.user.name
+                            });
+                        } catch (emailErr) {
+                            console.error('❌ Contacts email notification failed:', emailErr);
+                        }
                     }
                 }
 
