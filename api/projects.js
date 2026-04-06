@@ -799,7 +799,7 @@ const handler = async (req, res) => {
                 const designerEmails = data.designerEmails || [];
                 const designerHoursMap = data.designerHours || {};
                 const totalAllocatedHours = data.totalAllocatedHours || 0;
-                
+
                 // Validate at least one designer is selected
                 if (designerUids.length === 0) {
                     return res.status(400).json({
@@ -807,30 +807,45 @@ const handler = async (req, res) => {
                         error: 'At least one designer must be assigned'
                     });
                 }
-                
-                const validatedDesigners = [];
-                
-                // Validation for allocated hours
+
+                // Validation for allocated hours against project budget
                 const maxHours = (project.maxAllocatedHours || 0) + (project.additionalHours || 0);
-                if (maxHours > 0 && totalAllocatedHours > maxHours) {
+                if (maxHours > 0 && totalAllocatedHours > maxHours + 0.1) {
                     return res.status(400).json({
                         success: false,
                         error: `Total allocated hours (${totalAllocatedHours}) exceeds available budget (${maxHours})`
                     });
                 }
-                
+
+                // Get per-designer hours logged from timesheets to enforce min allocation
+                const timesheetsSnapshot = await db.collection('timesheets')
+                    .where('projectId', '==', id)
+                    .get();
+                const hoursLoggedPerDesigner = {};
+                timesheetsSnapshot.forEach(doc => {
+                    const t = doc.data();
+                    if (t.designerUid) {
+                        hoursLoggedPerDesigner[t.designerUid] = (hoursLoggedPerDesigner[t.designerUid] || 0) + (parseFloat(t.hours) || 0);
+                    }
+                });
+
+                // Track which designers are existing vs new
+                const previousDesigners = project.assignedDesigners || [];
+
+                const validatedDesigners = [];
+
                 // Validate all designers from database
                 for (let i = 0; i < designerUids.length; i++) {
                     const uid = designerUids[i];
                     const userDoc = await db.collection('users').doc(uid).get();
-                    
+
                     if (!userDoc.exists) {
                         return res.status(400).json({
                             success: false,
                             error: `Designer not found: ${designerNames[i] || uid}`
                         });
                     }
-                    
+
                     const userData = userDoc.data();
                     if (userData.role !== 'designer') {
                         return res.status(400).json({
@@ -838,57 +853,64 @@ const handler = async (req, res) => {
                             error: `User ${userData.name} is not a designer`
                         });
                     }
-                    
-                    // Use email from frontend or Firestore
+
+                    // Validate hours not below logged hours
+                    const logged = hoursLoggedPerDesigner[uid] || 0;
+                    const allocated = parseFloat(designerHoursMap[uid]) || 0;
+                    if (logged > 0 && allocated < logged - 0.1) {
+                        return res.status(400).json({
+                            success: false,
+                            error: `Cannot allocate ${allocated}h for ${userData.name} — they have already logged ${logged.toFixed(1)}h`
+                        });
+                    }
+
                     const designerEmail = designerEmails[i] || userData.email;
-                    
+
                     validatedDesigners.push({
                         uid: uid,
                         name: userData.name,
                         email: designerEmail
                     });
-                    
-                    // Notify each designer
-                    notifications.push({
-                        type: 'project_assigned',
-                        recipientUid: uid,
-                        recipientRole: 'designer',
-                        message: `New project assigned: "${project.projectName}" (${designerHoursMap[uid] || 0} hours allocated)`,
-                        projectId: id,
-                        projectName: project.projectName,
-                        clientCompany: project.clientCompany,
-                        assignedBy: req.user.name,
-                        allocatedHours: designerHoursMap[uid] || 0,
-                        priority: 'high'
-                    });
-                    
-                    // ✅ SEND EMAIL NOTIFICATION TO DESIGNER + COO
-                    console.log(`\n📧 Sending designer allocation email for ${userData.name}...`);
-                    try {
-                        const emailResult = await sendEmailNotification('designer.allocated', {
-                            projectName: project.projectName || 'Project',
-                            clientName: project.clientCompany || project.clientName || 'Client',
-                            designerEmail: designerEmail,  // ⚠️ CRITICAL
-                            designerRole: 'Designer',
-                            designManager: project.designLeadName || req.user.name,
-                            allocatedBy: req.user.name,
-                            projectId: id
+
+                    // Only notify NEW designers (not already assigned)
+                    const isNew = !previousDesigners.includes(uid);
+                    if (isNew) {
+                        notifications.push({
+                            type: 'project_assigned',
+                            recipientUid: uid,
+                            recipientRole: 'designer',
+                            message: `New project assigned: "${project.projectName}" (${designerHoursMap[uid] || 0} hours allocated)`,
+                            projectId: id,
+                            projectName: project.projectName,
+                            clientCompany: project.clientCompany,
+                            assignedBy: req.user.name,
+                            allocatedHours: designerHoursMap[uid] || 0,
+                            priority: 'high'
                         });
-                        
-                        console.log('📬 Email Result:', emailResult);
-                        
-                        if (emailResult.success) {
-                            console.log(`✅ Email sent to ${emailResult.recipients} recipients`);
-                        } else {
-                            console.error('⚠️ Email failed:', emailResult.error);
+
+                        console.log(`\n📧 Sending designer allocation email for ${userData.name}...`);
+                        try {
+                            const emailResult = await sendEmailNotification('designer.allocated', {
+                                projectName: project.projectName || 'Project',
+                                clientName: project.clientCompany || project.clientName || 'Client',
+                                designerEmail: designerEmail,
+                                designerRole: 'Designer',
+                                designManager: project.designLeadName || req.user.name,
+                                allocatedBy: req.user.name,
+                                projectId: id
+                            });
+                            if (emailResult.success) {
+                                console.log(`✅ Email sent to ${emailResult.recipients} recipients`);
+                            } else {
+                                console.error('⚠️ Email failed:', emailResult.error);
+                            }
+                        } catch (emailError) {
+                            console.error('❌ Email error:', emailError);
                         }
-                    } catch (emailError) {
-                        console.error('❌ Email error:', emailError);
-                        // Don't fail the assignment just because email failed
                     }
                 }
-                
-                // Build combined designer UIDs list (keep design lead from COO allocation + new designers)
+
+                // Build combined UIDs list (keep design lead from COO allocation + designers)
                 const existingDesignerUids = project.assignedDesignerUids || [];
                 const newDesignerUids = validatedDesigners.map(d => d.uid);
                 const combinedUids = [...new Set([...existingDesignerUids, ...newDesignerUids])];
@@ -914,7 +936,7 @@ const handler = async (req, res) => {
                     status: 'in_progress',
                     designStatus: 'in_progress'
                 };
-                
+
                 activityDetail = `Designers assigned: ${validatedDesigners.map(d => d.name).join(', ')} with a total of ${totalAllocatedHours} hours.`;
             }
 
