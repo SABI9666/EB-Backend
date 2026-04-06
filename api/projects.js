@@ -778,10 +778,12 @@ const handler = async (req, res) => {
             // Design Lead assigning designers
             else if (action === 'assign_designers') {
                 // Only Design Lead (who is allocated) or COO/Director can assign designers
-                if (req.user.role === 'design_lead' && project.designLeadUid !== req.user.uid) {
-                    return res.status(403).json({ 
-                        success: false, 
-                        error: 'You are not the allocated Design Lead for this project' 
+                const isAssignedLead = project.designLeadUid === req.user.uid ||
+                    (project.assignedDesignerUids && project.assignedDesignerUids.includes(req.user.uid));
+                if (req.user.role === 'design_lead' && !isAssignedLead) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'You are not the allocated Design Lead for this project'
                     });
                 }
                 
@@ -906,10 +908,12 @@ const handler = async (req, res) => {
             // Design Lead/Manager marking project as complete
             else if (action === 'mark_complete') {
                 // Only allocated Design Lead, COO, or Director can complete
-                if (req.user.role === 'design_lead' && project.designLeadUid !== req.user.uid) {
-                    return res.status(403).json({ 
-                        success: false, 
-                        error: 'You are not the allocated Design Lead for this project' 
+                const isAssignedLeadForComplete = project.designLeadUid === req.user.uid ||
+                    (project.assignedDesignerUids && project.assignedDesignerUids.includes(req.user.uid));
+                if (req.user.role === 'design_lead' && !isAssignedLeadForComplete) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'You are not the allocated Design Lead for this project'
                     });
                 }
                 
@@ -1046,6 +1050,9 @@ const handler = async (req, res) => {
                     });
                 }
                 
+                // Extract Design Lead from allocations (designerRole === 'design_lead')
+                const designLeadAllocation = newAllocations.find(a => a.designerRole === 'design_lead');
+
                 // Prepare update object
                 updates = {
                     // *** CRITICAL FIELDS FOR BUDGET LOCKING ***
@@ -1053,15 +1060,23 @@ const handler = async (req, res) => {
                     maxHoursSource: maxHoursSource,                  // LOCK THE SOURCE
                     totalAllocatedHours: parseFloat(totalAllocatedHours), // NEW TOTAL USAGE
                     allocationStatus: allocStatus,                   // ✅ STATUS TRACKING
-                    
+
                     designerHours: existingDesignerHours,
                     assignedDesignerUids: Array.from(existingAssignedUids),
                     assignedDesignerNames: Array.from(existingAssignedNames),
                     assignedDesignerEmails: Array.from(existingDesignerEmails),
-                    
+
                     status: 'in_progress', // Set global project status
                     designStatus: 'in_progress',
                 };
+
+                // ✅ FIX: Set designLeadUid/Name/Email so Design Lead portal can find this project
+                if (designLeadAllocation) {
+                    updates.designLeadUid = designLeadAllocation.designerUid;
+                    updates.designLeadName = designLeadAllocation.designerName;
+                    updates.designLeadEmail = designLeadAllocation.designerEmail;
+                    updates.designLeadAssigned = true;
+                }
                 
                 // Save Project Number if provided by COO
                 if (data.projectNumber) {
