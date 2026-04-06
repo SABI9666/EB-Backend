@@ -24,13 +24,31 @@ async function verifyToken(req, res, next) {
     }
     
     const userData = userDoc.data();
-    
+
+    // Email-based role override (matches frontend authorizedUsers mapping)
+    const DESIGN_LEAD_EMAILS = [
+      'muruganantham.tech@edanbrook.in',
+      'kathar.tech@edanbrook.in',
+      'aravindhan.tech@edanbrook.in',
+      'sathish.tech@edanbrook.in',
+      'rebar.lead@edanbrook.com',
+      'rebar.lead1@edanbrook.com'
+    ];
+
+    const userEmail = (decodedToken.email || '').toLowerCase();
+    let resolvedRole = userData.role;
+
+    if (DESIGN_LEAD_EMAILS.includes(userEmail) && resolvedRole !== 'design_lead') {
+      console.log(`⚠️ Role override: ${userEmail} mapped from '${resolvedRole}' to 'design_lead'`);
+      resolvedRole = 'design_lead';
+    }
+
     // Attach user data to the request object for use in other APIs
     req.user = {
       uid: decodedToken.uid,
       email: decodedToken.email,
       name: userData.name,
-      role: userData.role,
+      role: resolvedRole,
       status: userData.status || 'active'
     };
     
