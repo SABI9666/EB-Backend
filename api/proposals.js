@@ -557,6 +557,7 @@ const handler = async (req, res) => {
                     if (req.user.role !== 'bdm' || proposal.createdByUid !== req.user.uid) {
                         return res.status(403).json({ success: false, error: 'Only the BDM who created this proposal can mark it as won' });
                     }
+                    // Required PO basics
                     const poNumber = (data && data.poNumber) ? String(data.poNumber).trim() : '';
                     const poValueRaw = data ? data.poValue : undefined;
                     const poValue = (poValueRaw !== undefined && poValueRaw !== null && poValueRaw !== '') ? parseFloat(poValueRaw) : NaN;
@@ -567,6 +568,26 @@ const handler = async (req, res) => {
                     if (isNaN(poValue) || poValue <= 0) {
                         return res.status(400).json({ success: false, error: 'Valid P.O. Value is required' });
                     }
+
+                    // Optional extras supplied by BDM (tracking + attachment)
+                    const trackingNumber = (data && data.trackingNumber) ? String(data.trackingNumber).trim() : '';
+                    const attachmentUrl = (data && data.attachmentUrl) ? String(data.attachmentUrl) : '';
+                    const attachmentName = (data && data.attachmentName) ? String(data.attachmentName) : '';
+                    const attachmentFileId = (data && data.attachmentFileId) ? String(data.attachmentFileId) : '';
+
+                    const poDetails = {
+                        poNumber: poNumber,
+                        value: poValue,
+                        currency: poCurrency,
+                        trackingNumber: trackingNumber,
+                        attachmentUrl: attachmentUrl,
+                        attachmentName: attachmentName,
+                        attachmentFileId: attachmentFileId,
+                        uploadedBy: req.user.email,
+                        uploadedByName: req.user.name,
+                        uploadedAt: new Date().toISOString()
+                    };
+
                     updates = {
                         status: 'won',
                         wonDate: admin.firestore.FieldValue.serverTimestamp(),
@@ -575,7 +596,9 @@ const handler = async (req, res) => {
                         poCurrency: poCurrency,
                         poAddedBy: req.user.name,
                         poAddedByUid: req.user.uid,
-                        poAddedAt: admin.firestore.FieldValue.serverTimestamp()
+                        poAddedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        poDetails: poDetails,
+                        hasPO: true
                     };
                     activityDetail = `Proposal marked as WON (P.O. ${poNumber}, ${poCurrency} ${poValue})`;
 
