@@ -264,6 +264,7 @@ const handler = async (req, res) => {
             if (action === 'get_dc_comments') {
                 const projectIdFilter = req.query.projectId;
                 const designFileIdFilter = req.query.designFileId;
+                const myDesignFiles = req.query.myDesignFiles === 'true';
 
                 try {
                     let query = db.collection('dcComments');
@@ -282,7 +283,15 @@ const handler = async (req, res) => {
                         snapshot = await query.get();
                     }
 
-                    const comments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    let comments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                    // Filter to comments on design files uploaded by the calling user
+                    if (myDesignFiles) {
+                        const myFilesSnap = await db.collection('designFiles')
+                            .where('uploadedByUid', '==', req.user.uid).get();
+                        const myFileIds = new Set(myFilesSnap.docs.map(d => d.id));
+                        comments = comments.filter(c => myFileIds.has(c.designFileId));
+                    }
 
                     // Sort manually as fallback
                     comments.sort((a, b) => {
@@ -2347,6 +2356,25 @@ const handler = async (req, res) => {
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     isRead: false
                 });
+
+                // Notify the design lead / designer who uploaded the file
+                if (dcFile.uploadedByUid) {
+                    try {
+                        await db.collection('notifications').add({
+                            type: 'dc_comment',
+                            recipientUid: dcFile.uploadedByUid,
+                            message: `${req.user.name} added a ${commentType === 'client_feedback' ? 'client feedback' : commentType === 'rectification' ? 'rectification note' : 'comment'} on your design file "${dcFile.fileName}" (${project.projectName})`,
+                            projectId: id,
+                            designFileId: designFileId,
+                            commentId: commentRef.id,
+                            priority: commentType === 'rectification' ? 'high' : 'normal',
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false
+                        });
+                    } catch (notifyErr) {
+                        console.error('Design lead notification failed:', notifyErr);
+                    }
+                }
 
                 return res.status(200).json({
                     success: true,
