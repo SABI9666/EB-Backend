@@ -1645,14 +1645,19 @@ const handler = async (req, res) => {
                     });
                 }
 
-                const { 
-                    fileName, 
-                    fileUrl, 
+                const {
+                    fileName,
+                    fileUrl,
                     fileSize,
                     notes,
                     uploadType,
-                    isExternalLink 
+                    isExternalLink,
+                    directToDC,
+                    fileCategory // e.g. 'IFA' | 'IFC' | 'REV' | 'MIXED'
                 } = data;
+
+                // Only Design Lead may bypass COO approval and send directly to DC
+                const sendDirectToDC = directToDC === true && req.user.role === 'design_lead';
 
                 // Validation
                 if (!fileName || !fileUrl) {
@@ -1678,18 +1683,29 @@ const handler = async (req, res) => {
                     fileSize: fileSize || 0,
                     uploadType: uploadType || 'file', // 'file' or 'link'
                     isExternalLink: isExternalLink || false,
-                    
+                    fileCategory: fileCategory || null,
+
                     // Client Info - To be filled by Document Controller
                     clientEmail: '',
                     clientName: '',
-                    
+
                     // Designer Info
                     uploadedByUid: req.user.uid,
                     uploadedByName: req.user.name,
                     uploadedByEmail: req.user.email,
-                    
-                    // Status
-                    status: 'uploaded', // Not yet submitted for approval
+
+                    // Status - Design Lead direct upload bypasses COO approval
+                    status: sendDirectToDC ? 'approved' : 'uploaded',
+                    ...(sendDirectToDC ? {
+                        submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        submittedByUid: req.user.uid,
+                        submittedByName: req.user.name,
+                        approvedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        approvedByUid: req.user.uid,
+                        approvedByName: req.user.name,
+                        approvalNotes: 'Auto-approved: uploaded directly by Design Lead',
+                        bypassedCooApproval: true
+                    } : {}),
                     
                     // Notes
                     designerNotes: notes || '',
@@ -1701,6 +1717,28 @@ const handler = async (req, res) => {
                 };
 
                 const designFileRef = await db.collection('designFiles').add(designFileData);
+
+                // If Design Lead uploaded directly, notify Document Controllers immediately
+                if (sendDirectToDC) {
+                    try {
+                        await db.collection('notifications').add({
+                            type: 'design_file_ready_for_client',
+                            recipientRole: 'document_controller',
+                            message: `Design file "${fileName}" for project "${project.projectName}" was uploaded directly by Design Lead ${req.user.name} and is ready to send to client.`,
+                            projectId: id,
+                            designFileId: designFileRef.id,
+                            fileName: fileName,
+                            fileCategory: fileCategory || null,
+                            uploadedBy: req.user.name,
+                            bypassedCooApproval: true,
+                            priority: 'high',
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false
+                        });
+                    } catch (notifyErr) {
+                        console.error('DC notification failed:', notifyErr);
+                    }
+                }
 
                 // Log activity
                 const uploadTypeLabel = isExternalLink ? 'link' : 'file';
