@@ -50,7 +50,6 @@ const handler = async (req, res) => {
             const { id } = req.query;
 
             if (id) {
-                // Get single proposal
                 const doc = await db.collection('proposals').doc(id).get();
                 if (!doc.exists) {
                     return res.status(404).json({ success: false, error: 'Proposal not found' });
@@ -58,7 +57,6 @@ const handler = async (req, res) => {
 
                 const proposalData = doc.data();
 
-                // BDM isolation
                 if (req.user.role === 'bdm' && proposalData.createdByUid !== req.user.uid) {
                     return res.status(403).json({
                         success: false,
@@ -66,7 +64,6 @@ const handler = async (req, res) => {
                     });
                 }
 
-                // Design Lead isolation
                 if (req.user.role === 'design_lead') {
                     if (!proposalData.projectCreated || !proposalData.projectId) {
                         return res.status(403).json({
@@ -83,7 +80,6 @@ const handler = async (req, res) => {
                     }
                 }
 
-                // Designer isolation
                 if (req.user.role === 'designer') {
                     if (!proposalData.projectCreated || !proposalData.projectId) {
                         return res.status(403).json({
@@ -103,7 +99,6 @@ const handler = async (req, res) => {
                 return res.status(200).json({ success: true, data: { id: doc.id, ...proposalData } });
             }
 
-            // Get all proposals with role-based filtering
             let proposals = [];
 
             if (req.user.role === 'bdm') {
@@ -532,90 +527,109 @@ const handler = async (req, res) => {
                     activityDetail = 'Proposal submitted to client';
                     break;
 
-                case 'mark_won':
+                case 'mark_won': {
                     if (req.user.role !== 'bdm' || proposal.createdByUid !== req.user.uid) {
                         return res.status(403).json({ success: false, error: 'Only the BDM who created this proposal can mark it as won' });
                     }
 
-                    // Optional PO details supplied by BDM at the time of marking the proposal as won
-                    const poInput = (data && data.poDetails) ? data.poDetails : null;
-                    let poDetails = null;
-                    if (poInput && (poInput.poNumber || poInput.value || poInput.attachmentUrl || poInput.trackingNumber)) {
-                        poDetails = {
-                            poNumber: poInput.poNumber || '',
-                            value: poInput.value !== undefined && poInput.value !== '' ? parseFloat(poInput.value) : null,
-                            currency: poInput.currency || (proposal.pricing && proposal.pricing.currency) || 'USD',
-                            trackingNumber: poInput.trackingNumber || '',
-                            attachmentUrl: poInput.attachmentUrl || '',
-                            attachmentName: poInput.attachmentName || '',
-                            attachmentFileId: poInput.attachmentFileId || '',
-                            uploadedBy: req.user.email,
-                            uploadedByName: req.user.name,
-                            uploadedAt: new Date().toISOString()
-                        };
+                    // Required PO basics
+                    const poNumber = (data && data.poNumber) ? String(data.poNumber).trim() : '';
+                    const poValueRaw = data ? data.poValue : undefined;
+                    const poValue = (poValueRaw !== undefined && poValueRaw !== null && poValueRaw !== '') ? parseFloat(poValueRaw) : NaN;
+                    const poCurrency = (data && data.poCurrency) ? String(data.poCurrency).trim().toUpperCase() : 'USD';
+                    if (!poNumber) {
+                        return res.status(400).json({ success: false, error: 'P.O. Number is required to mark proposal as won' });
                     }
+                    if (isNaN(poValue) || poValue <= 0) {
+                        return res.status(400).json({ success: false, error: 'Valid P.O. Value is required' });
+                    }
+
+                    // Optional extras supplied by BDM (tracking + attachment)
+                    const trackingNumber = (data && data.trackingNumber) ? String(data.trackingNumber).trim() : '';
+                    const attachmentUrl = (data && data.attachmentUrl) ? String(data.attachmentUrl) : '';
+                    const attachmentName = (data && data.attachmentName) ? String(data.attachmentName) : '';
+                    const attachmentFileId = (data && data.attachmentFileId) ? String(data.attachmentFileId) : '';
+
+                    const poDetails = {
+                        poNumber: poNumber,
+                        value: poValue,
+                        currency: poCurrency,
+                        trackingNumber: trackingNumber,
+                        attachmentUrl: attachmentUrl,
+                        attachmentName: attachmentName,
+                        attachmentFileId: attachmentFileId,
+                        uploadedBy: req.user.email,
+                        uploadedByName: req.user.name,
+                        uploadedAt: new Date().toISOString()
+                    };
 
                     updates = {
                         status: 'won',
-                        wonDate: admin.firestore.FieldValue.serverTimestamp()
+                        wonDate: admin.firestore.FieldValue.serverTimestamp(),
+                        poNumber: poNumber,
+                        poValue: poValue,
+                        poCurrency: poCurrency,
+                        poAddedBy: req.user.name,
+                        poAddedByUid: req.user.uid,
+                        poAddedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        poDetails: poDetails,
+                        hasPO: true
                     };
-                    if (poDetails) {
-                        updates.poDetails = poDetails;
-                        updates.hasPO = true;
-                    }
-                    activityDetail = poDetails
-                        ? `Proposal marked as WON with PO ${poDetails.poNumber || ''} (${poDetails.currency} ${poDetails.value || ''})`
-                        : 'Proposal marked as WON';
+                    activityDetail = `Proposal marked as WON (P.O. ${poNumber}, ${poCurrency} ${poValue})`;
 
+                    // Send Project Won email to COO & Director
                     try {
                         sendEmailNotification('project.won', {
                             projectName: proposal.projectName,
                             clientName: proposal.clientName || proposal.clientCompany || '',
                             quoteValue: proposal.pricing?.quoteValue || '',
+                            poNumber: poNumber,
+                            poValue: poValue,
+                            poCurrency: poCurrency,
                             createdBy: req.user.name,
                             bdmName: req.user.name,
                             proposalId: id,
-                            poDetails: poDetails || undefined
+                            poDetails: poDetails
                         }).catch(e => console.error('Project won email failed:', e.message));
                     } catch (e) { console.error('Error preparing project won email:', e.message); }
 
-                    if (poDetails) {
-                        const poRecipientRoles = ['coo', 'hr', 'accounts'];
-                        try {
-                            const notifPromises = poRecipientRoles.map(role => db.collection('notifications').add({
-                                type: 'po_received',
-                                recipientRole: role,
-                                proposalId: id,
-                                message: `PO received for "${proposal.projectName}" — ${poDetails.currency} ${poDetails.value || ''} (PO #${poDetails.poNumber || 'N/A'})`,
-                                createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                                isRead: false,
-                                priority: 'high',
-                                poDetails: poDetails
-                            }));
-                            await Promise.all(notifPromises);
-                        } catch (e) { console.error('Error creating PO notifications:', e.message); }
+                    // Notify COO, HR and Accounts (in-app + email) - PO is mandatory
+                    const poRecipientRoles = ['coo', 'hr', 'accounts'];
+                    try {
+                        const notifPromises = poRecipientRoles.map(role => db.collection('notifications').add({
+                            type: 'po_received',
+                            recipientRole: role,
+                            proposalId: id,
+                            message: `PO received for "${proposal.projectName}" — ${poCurrency} ${poValue} (PO #${poNumber})`,
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false,
+                            priority: 'high',
+                            poDetails: poDetails
+                        }));
+                        await Promise.all(notifPromises);
+                    } catch (e) { console.error('Error creating PO notifications:', e.message); }
 
-                        try {
-                            const usersSnap = await db.collection('users').where('role', 'in', poRecipientRoles).get();
-                            const recipientEmails = usersSnap.docs.map(d => d.data().email).filter(Boolean);
-                            if (recipientEmails.length > 0) {
-                                sendEmailNotification('project.po_received', {
-                                    projectName: proposal.projectName,
-                                    clientName: proposal.clientCompany || '',
-                                    bdmName: req.user.name,
-                                    poNumber: poDetails.poNumber,
-                                    poValue: `${poDetails.currency} ${poDetails.value || ''}`,
-                                    trackingNumber: poDetails.trackingNumber,
-                                    attachmentUrl: poDetails.attachmentUrl,
-                                    attachmentName: poDetails.attachmentName,
-                                    proposalId: id,
-                                    recipients: recipientEmails
-                                }).catch(e => console.error('PO received email failed:', e.message));
-                            }
-                        } catch (e) { console.error('Error sending PO received email:', e.message); }
-                    }
+                    try {
+                        const usersSnap = await db.collection('users').where('role', 'in', poRecipientRoles).get();
+                        const recipientEmails = usersSnap.docs.map(d => d.data().email).filter(Boolean);
+                        if (recipientEmails.length > 0) {
+                            sendEmailNotification('project.po_received', {
+                                projectName: proposal.projectName,
+                                clientName: proposal.clientCompany || '',
+                                bdmName: req.user.name,
+                                poNumber: poNumber,
+                                poValue: `${poCurrency} ${poValue}`,
+                                trackingNumber: trackingNumber,
+                                attachmentUrl: attachmentUrl,
+                                attachmentName: attachmentName,
+                                proposalId: id,
+                                recipients: recipientEmails
+                            }).catch(e => console.error('PO received email failed:', e.message));
+                        }
+                    } catch (e) { console.error('Error sending PO received email:', e.message); }
 
                     break;
+                }
 
                 case 'mark_lost':
                     if (req.user.role !== 'bdm' || proposal.createdByUid !== req.user.uid) {
