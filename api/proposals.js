@@ -553,15 +553,31 @@ const handler = async (req, res) => {
                     activityDetail = 'Proposal submitted to client';
                     break;
 
-                case 'mark_won':
+                case 'mark_won': {
                     if (req.user.role !== 'bdm' || proposal.createdByUid !== req.user.uid) {
                         return res.status(403).json({ success: false, error: 'Only the BDM who created this proposal can mark it as won' });
                     }
+                    const poNumber = (data && data.poNumber) ? String(data.poNumber).trim() : '';
+                    const poValueRaw = data ? data.poValue : undefined;
+                    const poValue = (poValueRaw !== undefined && poValueRaw !== null && poValueRaw !== '') ? parseFloat(poValueRaw) : NaN;
+                    const poCurrency = (data && data.poCurrency) ? String(data.poCurrency).trim().toUpperCase() : 'USD';
+                    if (!poNumber) {
+                        return res.status(400).json({ success: false, error: 'P.O. Number is required to mark proposal as won' });
+                    }
+                    if (isNaN(poValue) || poValue <= 0) {
+                        return res.status(400).json({ success: false, error: 'Valid P.O. Value is required' });
+                    }
                     updates = {
                         status: 'won',
-                        wonDate: admin.firestore.FieldValue.serverTimestamp()
+                        wonDate: admin.firestore.FieldValue.serverTimestamp(),
+                        poNumber: poNumber,
+                        poValue: poValue,
+                        poCurrency: poCurrency,
+                        poAddedBy: req.user.name,
+                        poAddedByUid: req.user.uid,
+                        poAddedAt: admin.firestore.FieldValue.serverTimestamp()
                     };
-                    activityDetail = 'Proposal marked as WON';
+                    activityDetail = `Proposal marked as WON (P.O. ${poNumber}, ${poCurrency} ${poValue})`;
 
                     // Send Project Won email to COO & Director
                     try {
@@ -569,6 +585,9 @@ const handler = async (req, res) => {
                             projectName: proposal.projectName,
                             clientName: proposal.clientName || proposal.clientCompany || '',
                             quoteValue: proposal.pricing?.quoteValue || '',
+                            poNumber: poNumber,
+                            poValue: poValue,
+                            poCurrency: poCurrency,
                             createdBy: req.user.name,
                             bdmName: req.user.name,
                             proposalId: id
@@ -576,6 +595,7 @@ const handler = async (req, res) => {
                     } catch (e) { console.error('Error preparing project won email:', e.message); }
 
                     break;
+                }
 
                 case 'mark_lost':
                     if (req.user.role !== 'bdm' || proposal.createdByUid !== req.user.uid) {
