@@ -9,7 +9,7 @@ const db = admin.firestore();
 // GET /api/petty-cash - List petty cash entries with optional filters
 router.get('/', verifyToken, async (req, res) => {
     try {
-        if (!['accounts', 'coo', 'director'].includes(req.user.role)) {
+        if (!['accounts', 'coo', 'director', 'it'].includes(req.user.role)) {
             return res.status(403).json({ success: false, error: 'Permission denied' });
         }
 
@@ -48,7 +48,7 @@ router.get('/', verifyToken, async (req, res) => {
 // POST /api/petty-cash - Add petty cash entry (expense or replenish)
 router.post('/', verifyToken, async (req, res) => {
     try {
-        if (!['accounts', 'coo', 'director'].includes(req.user.role)) {
+        if (!['accounts', 'coo', 'director', 'it'].includes(req.user.role)) {
             return res.status(403).json({ success: false, error: 'Permission denied' });
         }
 
@@ -169,7 +169,7 @@ router.post('/', verifyToken, async (req, res) => {
 // PUT /api/petty-cash/:id - Edit petty cash entry
 router.put('/:id', verifyToken, async (req, res) => {
     try {
-        if (!['accounts', 'coo', 'director'].includes(req.user.role)) {
+        if (!['accounts', 'coo', 'director', 'it'].includes(req.user.role)) {
             return res.status(403).json({ success: false, error: 'Permission denied' });
         }
 
