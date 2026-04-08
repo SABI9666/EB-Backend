@@ -2395,12 +2395,12 @@ const handler = async (req, res) => {
                     await db.collection('notifications').add({
                         type: 'design_file_sent',
                         recipientRole: 'coo',
-                        message: `Design file "${designFile.fileName}" sent to client: ${designFile.clientEmail} by ${req.user.name || 'Document Controller'}`,
+                        message: `Design file "${designFile.fileName}" sent to client: ${clientEmail} by ${req.user.name || 'Document Controller'}`,
                         projectId: id,
                         designFileId: designFileId,
                         sentBy: req.user.name || 'Document Controller',
                         sentByEmail: req.user.email,
-                        clientEmail: designFile.clientEmail,
+                        clientEmail: clientEmail,
                         priority: 'normal',
                         createdAt: admin.firestore.FieldValue.serverTimestamp(),
                         isRead: false
@@ -2411,11 +2411,11 @@ const handler = async (req, res) => {
                         await db.collection('notifications').add({
                             type: 'design_file_sent_notification',
                             recipientUid: designFile.uploadedByUid,
-                            message: `Your design file "${designFile.fileName}" has been sent to the client (${designFile.clientEmail}) by ${req.user.name || 'Document Controller'}`,
+                            message: `Your design file "${designFile.fileName}" has been sent to the client (${clientEmail}) by ${req.user.name || 'Document Controller'}`,
                             projectId: id,
                             designFileId: designFileId,
                             sentBy: req.user.name || 'Document Controller',
-                            clientEmail: designFile.clientEmail,
+                            clientEmail: clientEmail,
                             priority: 'normal',
                             createdAt: admin.firestore.FieldValue.serverTimestamp(),
                             isRead: false
@@ -2425,14 +2425,14 @@ const handler = async (req, res) => {
                     // Log activity
                     await db.collection('activities').add({
                         type: 'design_file_sent_to_client',
-                        details: `Design file "${designFile.fileName}" sent to ${designFile.clientEmail} for project ${project.projectName} by ${req.user.name || 'Document Controller'}`,
+                        details: `Design file "${designFile.fileName}" sent to ${clientEmail} for project ${project.projectName} by ${req.user.name || 'Document Controller'}`,
                         performedByName: req.user.name || 'Document Controller',
                         performedByRole: req.user.role || 'document_controller',
                         performedByUid: req.user.uid,
                         timestamp: admin.firestore.FieldValue.serverTimestamp(),
                         projectId: id,
                         designFileId: designFileId,
-                        clientEmail: designFile.clientEmail
+                        clientEmail: clientEmail
                     });
 
                     return res.status(200).json({ 
