@@ -283,7 +283,7 @@ const handler = async (req, res) => {
         }
 
         // ============================================
-        // PUT - Approve or Reject a variation
+        // PUT - Approve/Reject (COO) or Update Accounts Details (Accounts)
         // ============================================
         if (req.method === 'PUT') {
             const { id } = req.query;
@@ -293,6 +293,74 @@ const handler = async (req, res) => {
                 return res.status(400).json({ success: false, error: 'Variation ID is required.' });
             }
 
+            // ---- Accounts: update financial & accounts details on a variation ----
+            if (action === 'update_accounts_details') {
+                if (req.user.role !== 'accounts' && req.user.role !== 'director' && req.user.role !== 'coo') {
+                    return res.status(403).json({ success: false, error: 'Only Accounts, COO, or Director can update accounts details.' });
+                }
+
+                const variationRef = db.collection('variations').doc(id);
+                const variationDoc = await variationRef.get();
+                if (!variationDoc.exists) {
+                    return res.status(404).json({ success: false, error: 'Variation not found.' });
+                }
+
+                const { clientName, clientEmail, amount, currency, accountsDetails, invoiceReference, paymentTerms } = data || {};
+
+                const updates = sanitizeForFirestore({
+                    clientName: clientName !== undefined ? (clientName || null) : undefined,
+                    clientEmail: clientEmail !== undefined ? (clientEmail || null) : undefined,
+                    amount: amount !== undefined ? (amount ? parseFloat(amount) : null) : undefined,
+                    currency: currency !== undefined ? (currency || null) : undefined,
+                    accountsDetails: accountsDetails !== undefined ? (accountsDetails || null) : undefined,
+                    invoiceReference: invoiceReference !== undefined ? (invoiceReference || null) : undefined,
+                    paymentTerms: paymentTerms !== undefined ? (paymentTerms || null) : undefined,
+                    // Tracking fields
+                    accountsUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    accountsUpdatedByUid: req.user.uid,
+                    accountsUpdatedByName: req.user.name,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                await variationRef.update(updates);
+
+                const variation = variationDoc.data();
+
+                // Log activity
+                await db.collection('activities').add({
+                    type: 'variation_accounts_updated',
+                    details: `Accounts details updated for variation "${variation.variationCode}" by ${req.user.name}${amount ? ` — Amount: ${currency || ''} ${amount}` : ''}.`,
+                    performedByName: req.user.name,
+                    performedByRole: req.user.role,
+                    performedByUid: req.user.uid,
+                    timestamp: admin.firestore.FieldValue.serverTimestamp(),
+                    projectId: variation.parentProjectId,
+                    variationId: id
+                });
+
+                // Notify COO that accounts has updated the variation
+                const cooSnapshot = await db.collection('users').where('role', '==', 'coo').get();
+                const notifPromises = [];
+                cooSnapshot.forEach(doc => {
+                    notifPromises.push(db.collection('notifications').add({
+                        type: 'variation_accounts_updated',
+                        recipientUid: doc.id,
+                        recipientRole: 'coo',
+                        message: `Accounts has updated financial details for variation "${variation.variationCode}" (${variation.parentProjectName}).${amount ? ` Amount: ${currency || ''} ${amount}` : ''}`,
+                        projectId: variation.parentProjectId,
+                        variationId: id,
+                        updatedBy: req.user.name,
+                        priority: 'normal',
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false
+                    }));
+                });
+                await Promise.all(notifPromises);
+
+                return res.status(200).json({ success: true, message: 'Accounts details updated successfully.' });
+            }
+
+            // ---- COO/Director: approve or reject ----
             if (req.user.role !== 'coo' && req.user.role !== 'director') {
                 return res.status(403).json({ success: false, error: 'Only COO or Director can approve variations.' });
             }
