@@ -949,6 +949,7 @@ timesheetsRouter.post('/', async (req, res) => {
             projectId,
             projectName: projectData.projectName,
             projectCode: projectData.projectCode,
+            projectNumber: projectData.projectNumber || null,
             date: new Date(date),
             hours: Number(hours),
             description,
