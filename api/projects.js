@@ -1430,6 +1430,245 @@ const handler = async (req, res) => {
             // ============================================
 
             // ============================================
+            // NEW: Delete a single designer allocation
+            // (used when wrong designer or wrong hours were entered)
+            // ============================================
+            else if (action === 'delete_designer_allocation') {
+                // Only COO or Director can delete designer allocations
+                if (!['coo', 'director'].includes(req.user.role)) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'Only COO or Director can delete designer allocations'
+                    });
+                }
+
+                const { designerUid, reason } = data;
+
+                if (!designerUid) {
+                    return res.status(400).json({ success: false, error: 'Designer UID is required' });
+                }
+
+                // Block delete if designer has already logged time on this project
+                try {
+                    const tsSnap = await db.collection('timesheets')
+                        .where('projectId', '==', id)
+                        .where('userUid', '==', designerUid)
+                        .limit(1)
+                        .get();
+                    if (!tsSnap.empty) {
+                        return res.status(400).json({
+                            success: false,
+                            error: 'Cannot delete this allocation — the designer has already logged time on this project. Edit the hours instead.'
+                        });
+                    }
+                } catch (tsErr) {
+                    console.warn('Timesheet check skipped:', tsErr.message);
+                }
+
+                // Build new arrays/maps without this designer
+                const oldDesignerHours = project.designerHours || {};
+                const removedHours = parseFloat(oldDesignerHours[designerUid]) || 0;
+                const oldUids = Array.isArray(project.assignedDesignerUids) ? project.assignedDesignerUids : [];
+                const oldNames = Array.isArray(project.assignedDesignerNames) ? project.assignedDesignerNames : [];
+                const oldEmails = Array.isArray(project.assignedDesignerEmails) ? project.assignedDesignerEmails : [];
+
+                const idx = oldUids.indexOf(designerUid);
+                if (idx === -1 && removedHours === 0) {
+                    return res.status(404).json({ success: false, error: 'Designer is not allocated to this project' });
+                }
+
+                const removedName = (idx !== -1 && oldNames[idx]) ? oldNames[idx] : 'Designer';
+                const removedEmail = (idx !== -1 && oldEmails[idx]) ? oldEmails[idx] : '';
+
+                const newUids = oldUids.filter((_, i) => i !== idx);
+                const newNames = oldNames.filter((_, i) => i !== idx);
+                const newEmails = oldEmails.filter((_, i) => i !== idx);
+
+                const newDesignerHours = { ...oldDesignerHours };
+                delete newDesignerHours[designerUid];
+
+                const currentTotal = parseFloat(project.totalAllocatedHours) || 0;
+                const newTotalAllocated = Math.max(0, currentTotal - removedHours);
+                const maxBudget = parseFloat(project.maxAllocatedHours) || 0;
+
+                let allocStatus = 'not_started';
+                if (newTotalAllocated > 0 && (maxBudget === 0 || newTotalAllocated < maxBudget - 0.1)) {
+                    allocStatus = 'partial';
+                } else if (maxBudget > 0 && newTotalAllocated >= maxBudget - 0.1) {
+                    allocStatus = 'completed';
+                }
+
+                updates = {
+                    designerHours: newDesignerHours,
+                    assignedDesignerUids: newUids,
+                    assignedDesignerNames: newNames,
+                    assignedDesignerEmails: newEmails,
+                    totalAllocatedHours: newTotalAllocated,
+                    allocationStatus: allocStatus,
+                    lastAllocationDelete: {
+                        designerUid: designerUid,
+                        designerName: removedName,
+                        removedHours: removedHours,
+                        deletedBy: req.user.name,
+                        deletedByUid: req.user.uid,
+                        reason: reason || '',
+                        deletedAt: admin.firestore.FieldValue.serverTimestamp()
+                    }
+                };
+
+                // If the deleted designer was the Design Lead, clear those fields too
+                if (project.designLeadUid && project.designLeadUid === designerUid) {
+                    updates.designLeadUid = null;
+                    updates.designLeadName = null;
+                    updates.designLeadEmail = null;
+                    updates.designLeadAssigned = false;
+                }
+
+                activityDetail = `${req.user.name} removed ${removedName}'s allocation (${removedHours}h) from project "${project.projectName}"${reason ? ` — Reason: ${reason}` : ''}`;
+
+                // Notify the affected designer
+                notifications.push({
+                    type: 'allocation_removed',
+                    recipientUid: designerUid,
+                    recipientRole: 'designer',
+                    message: `Your allocation on "${project.projectName}" (${removedHours}h) has been removed by ${req.user.name}${reason ? '. Reason: ' + reason : ''}`,
+                    projectId: id,
+                    projectName: project.projectName,
+                    removedHours: removedHours,
+                    removedBy: req.user.name,
+                    priority: 'high'
+                });
+
+                // Email the affected designer (best-effort)
+                if (removedEmail) {
+                    try {
+                        await sendEmailNotification('allocation.removed', {
+                            projectName: project.projectName,
+                            designerName: removedName,
+                            designerEmail: removedEmail,
+                            removedHours: removedHours,
+                            removedBy: req.user.name,
+                            reason: reason || ''
+                        });
+                    } catch (emailErr) {
+                        console.error('Email notification failed:', emailErr.message);
+                    }
+                }
+
+                console.log(`🗑️ Designer allocation removed: ${removedName} (${removedHours}h) from ${project.projectName}`);
+            }
+            // ============================================
+            // END: Delete a single designer allocation
+            // ============================================
+
+            // ============================================
+            // NEW: Clear the entire project allocation
+            // (used when wrong Design Lead was selected — resets project)
+            // ============================================
+            else if (action === 'clear_project_allocation') {
+                // Only COO or Director can clear an allocation
+                if (!['coo', 'director'].includes(req.user.role)) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'Only COO or Director can clear a project allocation'
+                    });
+                }
+
+                const { reason } = data || {};
+
+                // Block clearing if any designer has logged time on this project
+                try {
+                    const tsSnap = await db.collection('timesheets')
+                        .where('projectId', '==', id)
+                        .limit(1)
+                        .get();
+                    if (!tsSnap.empty) {
+                        return res.status(400).json({
+                            success: false,
+                            error: 'Cannot clear allocation — time has already been logged on this project. Edit individual designer hours instead.'
+                        });
+                    }
+                } catch (tsErr) {
+                    console.warn('Timesheet check skipped:', tsErr.message);
+                }
+
+                const previousLeadName = project.designLeadName || 'N/A';
+                const previousLeadUid = project.designLeadUid || null;
+                const previousTotal = parseFloat(project.totalAllocatedHours) || 0;
+                const previousUids = Array.isArray(project.assignedDesignerUids) ? project.assignedDesignerUids : [];
+                const previousNames = Array.isArray(project.assignedDesignerNames) ? project.assignedDesignerNames : [];
+                const previousEmails = Array.isArray(project.assignedDesignerEmails) ? project.assignedDesignerEmails : [];
+
+                updates = {
+                    // Reset Design Lead fields
+                    designLeadUid: null,
+                    designLeadName: null,
+                    designLeadEmail: null,
+                    designLeadAssigned: false,
+
+                    // Reset designer assignments
+                    designerHours: {},
+                    assignedDesignerUids: [],
+                    assignedDesignerNames: [],
+                    assignedDesignerEmails: [],
+
+                    // Reset allocation totals & status
+                    totalAllocatedHours: 0,
+                    allocationStatus: 'not_started',
+                    designStatus: 'pending_allocation',
+                    status: 'pending_allocation',
+
+                    // Audit trail
+                    lastAllocationClear: {
+                        previousDesignLeadUid: previousLeadUid,
+                        previousDesignLeadName: previousLeadName,
+                        previousTotalAllocatedHours: previousTotal,
+                        clearedBy: req.user.name,
+                        clearedByUid: req.user.uid,
+                        reason: reason || '',
+                        clearedAt: admin.firestore.FieldValue.serverTimestamp()
+                    }
+                };
+
+                activityDetail = `${req.user.name} cleared the full allocation for project "${project.projectName}" (was assigned to ${previousLeadName}, ${previousTotal}h total)${reason ? ` — Reason: ${reason}` : ''}`;
+
+                // Notify previously assigned Design Lead
+                if (previousLeadUid) {
+                    notifications.push({
+                        type: 'allocation_cleared',
+                        recipientUid: previousLeadUid,
+                        recipientRole: 'design_lead',
+                        message: `Allocation for "${project.projectName}" has been cleared by ${req.user.name}${reason ? '. Reason: ' + reason : ''}`,
+                        projectId: id,
+                        projectName: project.projectName,
+                        clearedBy: req.user.name,
+                        priority: 'high'
+                    });
+                }
+
+                // Notify all previously assigned designers
+                previousUids.forEach((uid, i) => {
+                    if (uid && uid !== previousLeadUid) {
+                        notifications.push({
+                            type: 'allocation_cleared',
+                            recipientUid: uid,
+                            recipientRole: 'designer',
+                            message: `Your allocation on "${project.projectName}" has been removed by ${req.user.name}${reason ? '. Reason: ' + reason : ''}`,
+                            projectId: id,
+                            projectName: project.projectName,
+                            clearedBy: req.user.name,
+                            priority: 'high'
+                        });
+                    }
+                });
+
+                console.log(`🧹 Allocation cleared for project "${project.projectName}" by ${req.user.name}`);
+            }
+            // ============================================
+            // END: Clear the entire project allocation
+            // ============================================
+
+            // ============================================
             // NEW: Update Max Allocated Hours (Budget)
             // ============================================
             else if (action === 'update_max_hours') {
@@ -2403,7 +2642,7 @@ const handler = async (req, res) => {
             await projectRef.update(sanitizedUpdates);
 
             // ✅ Sync allocation status back to proposal so COO portal shows correct status
-            if (['allocate_to_multiple_designers', 'update_designer_allocation', 'update_max_hours', 'allocate_to_designers'].includes(action)) {
+            if (['allocate_to_multiple_designers', 'update_designer_allocation', 'update_max_hours', 'allocate_to_designers', 'delete_designer_allocation', 'clear_project_allocation'].includes(action)) {
                 const proposalId = project.proposalId;
                 if (proposalId) {
                     try {
