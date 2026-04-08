@@ -863,10 +863,10 @@ const handler = async (req, res) => {
                         });
                     }
 
-                    // Validate hours not below logged hours
+                    // Validate hours not below logged hours (only if hours were explicitly provided)
                     const logged = hoursLoggedPerDesigner[uid] || 0;
                     const allocated = parseFloat(designerHoursMap[uid]) || 0;
-                    if (logged > 0 && allocated < logged - 0.1) {
+                    if (allocated > 0 && logged > 0 && allocated < logged - 0.1) {
                         return res.status(400).json({
                             success: false,
                             error: `Cannot allocate ${allocated}h for ${userData.name} — they have already logged ${logged.toFixed(1)}h`
@@ -888,7 +888,7 @@ const handler = async (req, res) => {
                             type: 'project_assigned',
                             recipientUid: uid,
                             recipientRole: 'designer',
-                            message: `New project assigned: "${project.projectName}" (${designerHoursMap[uid] || 0} hours allocated)`,
+                            message: `New project assigned: "${project.projectName}"${designerHoursMap[uid] ? ` (${designerHoursMap[uid]} hours allocated)` : ''}`,
                             projectId: id,
                             projectName: project.projectName,
                             clientCompany: project.clientCompany,
@@ -946,7 +946,7 @@ const handler = async (req, res) => {
                     designStatus: 'in_progress'
                 };
 
-                activityDetail = `Designers assigned: ${validatedDesigners.map(d => d.name).join(', ')} with a total of ${totalAllocatedHours} hours.`;
+                activityDetail = `Designers assigned: ${validatedDesigners.map(d => d.name).join(', ')}${totalAllocatedHours > 0 ? ` with a total of ${totalAllocatedHours} hours` : ''}.`;
             }
 
             // Design Lead/Manager marking project as complete
