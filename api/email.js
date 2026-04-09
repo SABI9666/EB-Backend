@@ -39,9 +39,9 @@ const EMAIL_RECIPIENT_MAP = {
   'time_request.rejected': ['design_lead'], // COO rejects additional hours - Designer added dynamically via data.designerEmail
   'variation.requested': ['coo'], // Design Manager requests variation
   'variation.approved_detail': ['design_lead', 'bdm', 'coo'], // Variation approval with hour/rate details
-  'invoice.created': ['coo', 'bdm'], // Invoice created
-  'invoice.payment_due': ['coo', 'bdm'], // Payment due reminder
-  'invoice.overdue': ['coo', 'bdm'], // Overdue payment notification
+  'invoice.created': ['coo'], // Invoice created
+  'invoice.payment_due': ['coo'], // Payment due reminder
+  'invoice.overdue': ['coo'], // Overdue payment notification
 
   // Leave Request notification types
   'leave.submitted': ['coo', 'hr'], // Employee submits leave → COO, HR notified
