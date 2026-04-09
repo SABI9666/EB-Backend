@@ -31,7 +31,7 @@ const EMAIL_RECIPIENT_MAP = {
   'designer.allocated': ['coo'], // Design Manager allocates → Designer (+ dynamic Designer)
   'variation.allocated': ['bdm', 'coo'],
   'variation.approved': ['bdm', 'coo', 'design_lead'],
-  'invoice.saved': ['bdm', 'coo'],
+  'invoice.saved': ['coo'],
 
   // New notification types for timesheet workflow
   'time_request.created': ['design_lead', 'coo'], // Designer requests additional hours
