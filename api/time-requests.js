@@ -96,9 +96,15 @@ const handler = async (req, res) => {
             else if (req.user.role === 'designer') {
                 query = query.where('designerUid', '==', req.user.uid);
             }
-            // Design Leads see requests for their projects
+            // Design Leads see requests for their projects OR requests they submitted
             else if (req.user.role === 'design_lead') {
-                query = query.where('designLeadUid', '==', req.user.uid);
+                // If explicitly requesting their own submitted requests
+                if (req.query.myRequests === 'true') {
+                    query = query.where('designerUid', '==', req.user.uid)
+                                 .where('requestorType', '==', 'design_lead');
+                } else {
+                    query = query.where('designLeadUid', '==', req.user.uid);
+                }
             }
             
             if (projectId) {
@@ -144,14 +150,19 @@ const handler = async (req, res) => {
         // POST - Create time request with email notification
         // ============================================
         if (req.method === 'POST') {
-            const { 
-                projectId, 
-                requestedHours, 
-                reason, 
+            // Only designers and design leads can submit time requests
+            if (!['designer', 'design_lead'].includes(req.user.role)) {
+                return res.status(403).json({ success: false, error: 'Only designers and design leads can submit time requests' });
+            }
+
+            const {
+                projectId,
+                requestedHours,
+                reason,
                 attachmentUrl,
                 pendingTimesheetData
             } = req.body;
-            
+
             // Validation
             if (!projectId) {
                 return res.status(400).json({ success: false, error: 'Project ID is required' });
@@ -176,9 +187,16 @@ const handler = async (req, res) => {
             // Check if user is assigned to project
             if (req.user.role === 'designer') {
                 if (!project.assignedDesigners || !project.assignedDesigners.includes(req.user.uid)) {
-                    return res.status(403).json({ 
-                        success: false, 
-                        error: 'You are not assigned to this project' 
+                    return res.status(403).json({
+                        success: false,
+                        error: 'You are not assigned to this project'
+                    });
+                }
+            } else if (req.user.role === 'design_lead') {
+                if (project.designLeadUid !== req.user.uid) {
+                    return res.status(403).json({
+                        success: false,
+                        error: 'You are not the design lead for this project'
                     });
                 }
             }
@@ -188,6 +206,7 @@ const handler = async (req, res) => {
             const currentAdditionalHours = project.additionalHours || 0;
             
             // Create time request document
+            const isDesignLeadRequest = req.user.role === 'design_lead';
             const timeRequest = {
                 projectId,
                 projectName: project.projectName,
@@ -196,8 +215,9 @@ const handler = async (req, res) => {
                 designerUid: req.user.uid,
                 designerName: req.user.name,
                 designerEmail: req.user.email,
-                designLeadUid: project.designLeadUid || null,
-                designLeadName: project.designLeadName || null,
+                designLeadUid: isDesignLeadRequest ? req.user.uid : (project.designLeadUid || null),
+                designLeadName: isDesignLeadRequest ? req.user.name : (project.designLeadName || null),
+                requestorType: isDesignLeadRequest ? 'design_lead' : 'designer',
                 requestedHours: Number(requestedHours),
                 reason,
                 attachmentUrl: attachmentUrl || null,
@@ -224,11 +244,17 @@ const handler = async (req, res) => {
             });
             
             // Create notifications
-            const notificationRoles = ['coo', 'director'];
-            if (project.designLeadUid) {
+            // For design_lead requests: notify COO only (they manage it)
+            // For designer requests: notify COO, director, and design lead
+            const notificationRoles = isDesignLeadRequest ? ['coo'] : ['coo', 'director'];
+            if (!isDesignLeadRequest && project.designLeadUid) {
                 notificationRoles.push('design_lead');
             }
-            
+
+            const notificationMsg = isDesignLeadRequest
+                ? `Design Lead ${req.user.name} has requested ${requestedHours}h additional hours for "${project.projectName}"`
+                : `${req.user.name} has requested ${requestedHours}h additional time for "${project.projectName}"`;
+
             const notificationPromises = [];
             for (const role of notificationRoles) {
                 if (role === 'design_lead' && project.designLeadUid) {
@@ -237,7 +263,7 @@ const handler = async (req, res) => {
                             type: 'time_request_created',
                             recipientUid: project.designLeadUid,
                             recipientRole: 'design_lead',
-                            message: `${req.user.name} has requested ${requestedHours}h additional time for "${project.projectName}"`,
+                            message: notificationMsg,
                             projectId,
                             projectName: project.projectName,
                             requestId: docRef.id,
@@ -254,10 +280,11 @@ const handler = async (req, res) => {
                                 type: 'time_request_created',
                                 recipientUid: userDoc.id,
                                 recipientRole: role,
-                                message: `${req.user.name} has requested ${requestedHours}h additional time for "${project.projectName}"`,
+                                message: notificationMsg,
                                 projectId,
                                 projectName: project.projectName,
                                 requestId: docRef.id,
+                                requestorType: isDesignLeadRequest ? 'design_lead' : 'designer',
                                 priority: 'high',
                                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                                 isRead: false
@@ -350,10 +377,11 @@ const handler = async (req, res) => {
                 
                 updates.status = 'approved';
                 updates.approvedHours = hoursToApprove;
-                // Track if COO has allocated these approved hours to a designer
-                // Director approval sets this to false, COO allocation sets it to true
-                updates.allocatedToDesigner = false;
-                updates.allocationPendingCOO = true;
+                // For design_lead requests, no further allocation step is needed — the design lead
+                // manages their own team's hours. For designer requests, COO still needs to allocate.
+                const isDesignLeadReq = request.requestorType === 'design_lead';
+                updates.allocatedToDesigner = isDesignLeadReq ? true : false;
+                updates.allocationPendingCOO = isDesignLeadReq ? false : true;
                 
                 // Update project allocation
                 await db.collection('projects').doc(request.projectId).update({
