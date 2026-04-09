@@ -1260,6 +1260,7 @@ async function sendEmailNotification(event, data) {
     let fromEmail = FROM_EMAIL;
     if (isHREvent) fromEmail = HR_FROM_EMAIL;
     if (isDesignClientEvent) fromEmail = DESIGN_FROM_EMAIL;
+    if (isInvoiceEvent) fromEmail = ACCOUNTS_FROM_EMAIL;
 
     console.log(`🚀 Sending from [${fromEmail}] to [${recipients.length}] recipients...`);
     console.log(`📧 Recipients: ${recipients.join(', ')}`);
