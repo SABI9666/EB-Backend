@@ -934,6 +934,18 @@ timesheetsRouter.post('/', async (req, res) => {
         const allocatedHours = projectData.maxAllocatedHours || 0;
         const additionalHours = projectData.additionalHours || 0;
         const totalAllocation = allocatedHours + additionalHours;
+        const remaining = totalAllocation - totalHours;
+
+        // HARD BLOCK: all hours exhausted — design lead must request additional hours from COO
+        if (totalAllocation > 0 && remaining <= 0) {
+            return res.status(403).json({
+                success: false,
+                hoursExhausted: true,
+                error: 'All allocated hours for this project have been used up. The Design Lead must request additional hours from the COO before new timesheet entries can be submitted.',
+                totalHours: totalHours,
+                allocatedHours: totalAllocation
+            });
+        }
 
         if (totalHours + hours > totalAllocation && totalAllocation > 0) {
             return res.status(200).json({
