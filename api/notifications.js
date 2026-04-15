@@ -1,4 +1,4 @@
-// api/notifications.js - Updated with BDM isolation
+// api/notifications.js - Updated with BDM isolation + markAllRead endpoint
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
@@ -36,8 +36,6 @@ const handler = async (req, res) => {
             // BDM ISOLATION - Only their own notifications
             // ============================================
             if (userRole === 'bdm') {
-                // For BDMs, ONLY fetch notifications specifically for their UID
-                // Do NOT fetch role-based notifications
                 const uidQuery = db.collection('notifications')
                     .where('recipientUid', '==', userUid)
                     .limit(parseInt(limit));
@@ -45,10 +43,7 @@ const handler = async (req, res) => {
                 const uidSnapshot = await uidQuery.get();
                 allNotifications = uidSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-                // Sort manually by createdAt
                 allNotifications.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-
-                // Apply limit after sorting
                 allNotifications = allNotifications.slice(0, parseInt(limit));
 
                 console.log(`📬 BDM (${req.user.name}) notifications: ${allNotifications.length} found`);
@@ -57,17 +52,11 @@ const handler = async (req, res) => {
             // ALL OTHER ROLES - Get both role-based and UID-specific
             // ============================================
             else {
-                // Base query setup
-                let baseQuery = db.collection('notifications')
-                                 .limit(parseInt(limit));
+                let baseQuery = db.collection('notifications').limit(parseInt(limit));
 
-                // Role-based notifications (for their role, without specific UID)
                 let roleQuery = baseQuery.where('recipientRole', '==', userRole);
-                
-                // UID-specific notifications
                 let uidQuery = baseQuery.where('recipientUid', '==', userUid);
 
-                // Execute queries in parallel
                 const [roleSnapshot, uidSnapshot] = await Promise.all([
                     roleQuery.get(),
                     uidQuery.get()
@@ -76,23 +65,17 @@ const handler = async (req, res) => {
                 const roleNotifs = roleSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 const uidNotifs = uidSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
-                // Combine and remove duplicates using a Map
                 let combinedMap = new Map();
                 roleNotifs.forEach(n => combinedMap.set(n.id, n));
-                uidNotifs.forEach(n => combinedMap.set(n.id, n)); // Overwrites if ID already exists
+                uidNotifs.forEach(n => combinedMap.set(n.id, n));
 
                 allNotifications = Array.from(combinedMap.values());
-
-                // Sort manually AFTER fetching and combining
                 allNotifications.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-
-                // Apply limit *after* sorting the combined list
                 allNotifications = allNotifications.slice(0, parseInt(limit));
 
                 console.log(`📬 ${userRole.toUpperCase()} (${req.user.name}) notifications: ${allNotifications.length} found`);
             }
 
-            // Filter for unread if requested
             if (unreadOnly === 'true') {
                 allNotifications = allNotifications.filter(n => !n.isRead);
             }
@@ -116,7 +99,6 @@ const handler = async (req, res) => {
                 priority = 'normal'
             } = req.body;
 
-            // Basic validation
             if (!type || !recipientRole || !message) {
                  return res.status(400).json({ success: false, error: 'Missing required fields: type, recipientRole, message' });
             }
@@ -146,10 +128,78 @@ const handler = async (req, res) => {
         }
 
         // ============================================
-        // PUT - Mark a notification as read
+        // PUT - Mark notification(s) as read
         // ============================================
         if (req.method === 'PUT') {
-            const { id } = req.query;
+            const { id, markAllRead } = req.query;
+            const userRole = req.user.role;
+            const userUid = req.user.uid;
+
+            // ============================================
+            // markAllRead=true - Mark ALL unread notifications as read
+            // ============================================
+            if (markAllRead === 'true') {
+                let unreadDocs = [];
+
+                if (userRole === 'bdm') {
+                    const uidSnap = await db.collection('notifications')
+                        .where('recipientUid', '==', userUid)
+                        .where('isRead', '==', false)
+                        .get();
+                    unreadDocs = uidSnap.docs;
+                } else {
+                    const [roleSnap, uidSnap] = await Promise.all([
+                        db.collection('notifications')
+                            .where('recipientRole', '==', userRole)
+                            .where('isRead', '==', false)
+                            .get(),
+                        db.collection('notifications')
+                            .where('recipientUid', '==', userUid)
+                            .where('isRead', '==', false)
+                            .get()
+                    ]);
+
+                    const docMap = new Map();
+                    roleSnap.docs.forEach(d => docMap.set(d.id, d));
+                    uidSnap.docs.forEach(d => docMap.set(d.id, d));
+                    unreadDocs = Array.from(docMap.values());
+                }
+
+                if (unreadDocs.length === 0) {
+                    return res.status(200).json({ success: true, message: 'No unread notifications to update', count: 0 });
+                }
+
+                const readAt = admin.firestore.FieldValue.serverTimestamp();
+                let batch = db.batch();
+                let batchCount = 0;
+                let totalUpdated = 0;
+
+                for (const doc of unreadDocs) {
+                    batch.update(doc.ref, { isRead: true, readAt });
+                    batchCount++;
+                    totalUpdated++;
+                    if (batchCount >= 499) {
+                        await batch.commit();
+                        batch = db.batch();
+                        batchCount = 0;
+                    }
+                }
+
+                if (batchCount > 0) {
+                    await batch.commit();
+                }
+
+                console.log(`✅ Marked ${totalUpdated} notifications as read for ${req.user.name} (${userRole})`);
+                return res.status(200).json({
+                    success: true,
+                    message: `${totalUpdated} notifications marked as read`,
+                    count: totalUpdated
+                });
+            }
+
+            // ============================================
+            // Single notification update (existing logic)
+            // ============================================
             const { isRead } = req.body;
 
             if (isRead === undefined) {
@@ -173,12 +223,10 @@ const handler = async (req, res) => {
                 });
             }
 
-            // --- Authorization Check ---
             const notificationData = notificationDoc.data();
             const isRecipientByUid = notificationData.recipientUid === req.user.uid;
             const isRecipientByRole = notificationData.recipientRole === req.user.role && !notificationData.recipientUid;
 
-            // BDM special check - must match UID
             if (req.user.role === 'bdm' && !isRecipientByUid) {
                 return res.status(403).json({ 
                     success: false, 
@@ -192,7 +240,6 @@ const handler = async (req, res) => {
                     error: 'You do not have permission to modify this notification.' 
                 });
             }
-            // --- End Authorization Check ---
 
             await notificationRef.update({
                 isRead: Boolean(isRead),
@@ -231,26 +278,17 @@ const handler = async (req, res) => {
                 }
             };
 
-            // ============================================
-            // BDM ISOLATION - Only delete their own notifications
-            // ============================================
             if (userRole === 'bdm') {
                 console.log(`Deleting BDM notifications for UID: ${userUid}`);
                 const uidQuery = db.collection('notifications').where('recipientUid', '==', userUid);
                 const uidSnapshot = await uidQuery.get();
                 await processSnapshot(uidSnapshot);
-            }
-            // ============================================
-            // ALL OTHER ROLES - Delete both role-based and UID-specific
-            // ============================================
-            else {
-                // Notifications specifically for this user UID
+            } else {
                 console.log(`Deleting notifications for UID: ${userUid}`);
                 const uidQuery = db.collection('notifications').where('recipientUid', '==', userUid);
                 const uidSnapshot = await uidQuery.get();
                 await processSnapshot(uidSnapshot);
 
-                // Role-based notifications (without specific UID)
                 console.log(`Deleting role-based notifications for Role: ${userRole}`);
                 const roleQuery = db.collection('notifications')
                     .where('recipientRole', '==', userRole)
@@ -259,7 +297,6 @@ const handler = async (req, res) => {
                 await processSnapshot(roleSnapshot);
             }
 
-            // Commit any remaining deletes
             if (currentBatchSize > 0) {
                 console.log(`Committing final batch of ${currentBatchSize} deletes...`);
                 await batch.commit();
@@ -272,9 +309,6 @@ const handler = async (req, res) => {
             });
         }
 
-        // ============================================
-        // Fallback for unhandled methods
-        // ============================================
         return res.status(405).json({ success: false, error: 'Method not allowed' });
 
     } catch (error) {
