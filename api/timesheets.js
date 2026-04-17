@@ -88,6 +88,19 @@ const parseDate = (dateValue) => {
     }
     return null;
 };
+// Convert Firestore Timestamp fields to ISO strings so the
+// frontend receives plain date strings instead of { _seconds, _nanoseconds }.
+const serializeTimesheet = (data) => {
+    if (!data) return data;
+    const out = { ...data };
+    ['date', 'createdAt', 'updatedAt'].forEach((field) => {
+        const parsed = parseDate(out[field]);
+        if (parsed && !isNaN(parsed.getTime())) {
+            out[field] = parsed.toISOString();
+        }
+    });
+    return out;
+};
 
 timesheetsRouter.get('/', async (req, res) => {
     
