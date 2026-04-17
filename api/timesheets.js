@@ -705,7 +705,7 @@ timesheetsRouter.get('/', async (req, res) => {
                 .orderBy('date', 'desc')
                 .get();
             
-            snapshot.forEach(doc => timesheets.push({ id: doc.id, ...doc.data() }));
+           snapshot.forEach(doc => timesheets.push({ id: doc.id, ...serializeTimesheet(doc.data()) }));
             
             const dailyHours = {};
             const weeklyHours = {};
@@ -857,7 +857,7 @@ timesheetsRouter.get('/', async (req, res) => {
                 .orderBy('date', 'desc')
                 .get();
             
-            snapshot.forEach(doc => timesheets.push({ id: doc.id, ...doc.data() }));
+            snapshot.forEach(doc => timesheets.push({ id: doc.id, ...serializeTimesheet(doc.data()) }));
             return res.status(200).json({ success: true, data: timesheets });
         } catch (error) {
             console.error('Error in GET /timesheets (projectId):', error);
@@ -872,7 +872,7 @@ timesheetsRouter.get('/', async (req, res) => {
             .orderBy('date', 'desc')
             .get();
         
-        snapshot.forEach(doc => timesheets.push({ id: doc.id, ...doc.data() }));
+        snapshot.forEach(doc => timesheets.push({ id: doc.id, ...serializeTimesheet(doc.data()) }));
         return res.status(200).json({ success: true, data: timesheets });
     } catch (error) {
         console.error('Error in GET /timesheets (designer):', error);
