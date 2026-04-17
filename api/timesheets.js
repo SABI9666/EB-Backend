@@ -463,7 +463,7 @@ timesheetsRouter.get('/', async (req, res) => {
             
             snapshot.forEach(doc => {
                 const data = doc.data();
-                timesheets.push({ id: doc.id, ...data, date: data.date });
+                timesheets.push({ id: doc.id, ...serializeTimesheet(data) });
             });
             
             return res.status(200).json({ success: true, data: timesheets });
