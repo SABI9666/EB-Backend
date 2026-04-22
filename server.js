@@ -131,7 +131,12 @@ try {
     // Load all route handlers with individual error catching
     console.log('  Loading dashboard...');
     const dashboardHandler = require('./api/dashboard');
-    
+
+    // Wire Director approval email enhancer BEFORE any handler that destructures
+    // sendEmailNotification from the email module (e.g. proposals.js).
+    console.log('  Loading email-director-enhancer...');
+    require('./api/email-director-enhancer');
+
     console.log('  Loading proposals...');
     const proposalsHandler = require('./api/proposals');
     
