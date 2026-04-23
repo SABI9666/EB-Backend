@@ -177,6 +177,9 @@ try {
     console.log('  Loading timesheets...');
     const { timesheetsRouter, timeRequestRouter } = require('./api/timesheets');
 
+    console.log('  Loading timesheet-drawing-info...');
+    const timesheetDrawingInfoHandler = require('./api/timesheet-drawing-info');
+
     // ============================================
     // NEW: Load allocation-requests handler
     // ============================================
@@ -236,6 +239,7 @@ try {
     // to match the pattern used in proposals.js
     app.use('/api/timesheets', timesheetsRouter);
     app.use('/api/time-requests', timeRequestRouter);
+    app.use('/api/timesheet-drawing-info', timesheetDrawingInfoHandler);
     // --- End of Revert ---
 
     // ============================================
