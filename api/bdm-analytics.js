@@ -272,6 +272,43 @@ const handler = async (req, res) => {
         let winsInRange = 0;
         let variationsInRange = 0;
 
+        // ---------- lifetime accumulator (ignores from/to filter) ----------
+        // Always populated regardless of the requested window so the report
+        // can surface real numbers even when the user's date filter is narrow
+        // or there is simply no recent activity.
+        const lifetimeTotals = {
+            numQuotes: 0,
+            quoteValueTotal: 0,
+            numProjectsWon: 0,
+            projectValue: 0,
+            variationValue: 0,
+            totalValue: 0,
+            numNewClients: 0
+        };
+        const lifetimePerBdm = {}; // bdmUid -> totals (same shape)
+        function bumpLifetime(bdmUid, bdmName, kind, valueInr) {
+            if (!lifetimePerBdm[bdmUid]) {
+                lifetimePerBdm[bdmUid] = {
+                    bdmUid,
+                    bdmName: bdmName || (bdmMap[bdmUid] && bdmMap[bdmUid].bdmName) || 'Unknown',
+                    numQuotes: 0,
+                    quoteValueTotal: 0,
+                    numProjectsWon: 0,
+                    projectValue: 0,
+                    variationValue: 0,
+                    totalValue: 0,
+                    numNewClients: 0,
+                    clients: new Set()
+                };
+            }
+            const b = lifetimePerBdm[bdmUid];
+            if (kind === 'quote') { b.numQuotes += 1; b.quoteValueTotal += valueInr; lifetimeTotals.numQuotes += 1; lifetimeTotals.quoteValueTotal += valueInr; }
+            else if (kind === 'win') { b.numProjectsWon += 1; b.projectValue += valueInr; b.totalValue += valueInr; lifetimeTotals.numProjectsWon += 1; lifetimeTotals.projectValue += valueInr; lifetimeTotals.totalValue += valueInr; }
+            else if (kind === 'variation') { b.variationValue += valueInr; b.totalValue += valueInr; lifetimeTotals.variationValue += valueInr; lifetimeTotals.totalValue += valueInr; }
+        }
+        // Pre-seed all BDMs in the lifetime map so they always appear, even at zero.
+        Object.values(bdmMap).forEach((b) => bumpLifetime(b.bdmUid, b.bdmName, '_seed', 0));
+
         // ---------- bucket proposals into quotes / wins ----------
         for (const p of proposals) {
             proposalsScanned += 1;
@@ -301,6 +338,21 @@ const handler = async (req, res) => {
                         p.pricing.lastEditedAt)) ||
                 QUOTE_STATUSES.has(p.status);
             const quoteDate = pricedAt || lastEditedAt || submittedAt || updatedAt || createdAt;
+
+            // Lifetime tally: count every priced proposal regardless of window.
+            if (hasPricing) {
+                const _rawValue = num(p.pricing && p.pricing.quoteValue);
+                const _currency = (p.pricing && p.pricing.currency) || '';
+                bumpLifetime(bdmUid, bdmName, 'quote', toInr(_rawValue, _currency));
+                if (client) {
+                    const lb = lifetimePerBdm[bdmUid];
+                    if (lb && !lb.clients.has(client)) {
+                        lb.clients.add(client);
+                        lb.numNewClients += 1;
+                        lifetimeTotals.numNewClients += 1;
+                    }
+                }
+            }
 
             if (hasPricing && quoteDate && quoteDate >= fromDate && quoteDate <= toDate) {
                 quotesInRange += 1;
@@ -352,13 +404,6 @@ const handler = async (req, res) => {
                 toJsDate(proj.wonDate) ||
                 toJsDate(proj.createdAt) ||
                 toJsDate(proj.updatedAt);
-            if (!wonDate || wonDate < fromDate || wonDate > toDate) continue;
-
-            winsInRange += 1;
-            const stats = ensure(bdmUid, proj.bdmName || '');
-            const key = periodKey(wonDate, granularity);
-            if (!key) continue;
-            const period = ensurePeriod(stats, key);
 
             const rawValue =
                 num(proj.quoteValue) ||
@@ -369,6 +414,17 @@ const handler = async (req, res) => {
                 proj.currency ||
                 (proj.pricing && proj.pricing.currency) ||
                 '';
+
+            // Lifetime tally: every project doc is a win, regardless of window.
+            bumpLifetime(bdmUid, proj.bdmName || '', 'win', toInr(rawValue, currency));
+
+            if (!wonDate || wonDate < fromDate || wonDate > toDate) continue;
+
+            winsInRange += 1;
+            const stats = ensure(bdmUid, proj.bdmName || '');
+            const key = periodKey(wonDate, granularity);
+            if (!key) continue;
+            const period = ensurePeriod(stats, key);
             const projClient = proj.clientCompany || proj.clientName || '';
 
             period.wonProjects.push({
@@ -443,16 +499,6 @@ const handler = async (req, res) => {
         for (const v of variations) {
             if (v.status !== 'approved') continue;
             const approvedAt = toJsDate(v.approvedAt) || toJsDate(v.updatedAt);
-            if (!approvedAt || approvedAt < fromDate || approvedAt > toDate) continue;
-
-            variationsInRange += 1;
-            const owner = await resolveOwner(v.parentProjectId);
-            if (!owner) continue;
-
-            const stats = ensure(owner.bdmUid, owner.bdmName);
-            const key = periodKey(approvedAt, granularity);
-            if (!key) continue;
-            const period = ensurePeriod(stats, key);
 
             const rawValue = pickAmount(v, [
                 'value',
@@ -463,6 +509,22 @@ const handler = async (req, res) => {
                 'variationValue'
             ]);
             const currency = v.currency || '';
+
+            // Lifetime tally happens regardless of date window.
+            const owner = await resolveOwner(v.parentProjectId);
+            if (owner) {
+                bumpLifetime(owner.bdmUid, owner.bdmName, 'variation', toInr(rawValue, currency));
+            }
+
+            if (!approvedAt || approvedAt < fromDate || approvedAt > toDate) continue;
+
+            variationsInRange += 1;
+            if (!owner) continue;
+
+            const stats = ensure(owner.bdmUid, owner.bdmName);
+            const key = periodKey(approvedAt, granularity);
+            if (!key) continue;
+            const period = ensurePeriod(stats, key);
 
             period.variations.push({
                 variationId: v.id,
@@ -572,6 +634,23 @@ const handler = async (req, res) => {
             }
         );
 
+        // ---------- shape lifetime payload ----------
+        // Sorted by total value desc so the most-active BDMs surface first.
+        // Strip internal-only Set objects before serialization.
+        const lifetimeBdms = Object.values(lifetimePerBdm)
+            .map((b) => ({
+                bdmUid: b.bdmUid,
+                bdmName: b.bdmName,
+                numQuotes: b.numQuotes,
+                quoteValueTotal: b.quoteValueTotal,
+                numProjectsWon: b.numProjectsWon,
+                projectValue: b.projectValue,
+                variationValue: b.variationValue,
+                totalValue: b.totalValue,
+                numNewClients: b.numNewClients
+            }))
+            .sort((a, b) => b.totalValue - a.totalValue);
+
         return res.status(200).json({
             success: true,
             data: {
@@ -581,6 +660,11 @@ const handler = async (req, res) => {
                 periodKeys: Array.from(allPeriodKeys).sort(),
                 bdms: result,
                 totals: grandTotals,
+                lifetime: {
+                    totals: lifetimeTotals,
+                    bdms: lifetimeBdms,
+                    currency: 'INR'
+                },
                 meta: {
                     proposalsScanned,
                     projectsScanned: projects.length,
