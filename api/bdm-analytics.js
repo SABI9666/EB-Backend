@@ -128,6 +128,16 @@ const handler = async (req, res) => {
             : new Date(now.getFullYear() - 2, 0, 1);
         const toDate = to ? new Date(to) : now;
 
+        // Normalize boundaries: from = start-of-day UTC, to = end-of-day UTC.
+        // Without this, `to=YYYY-MM-DD` parses to 00:00:00Z and silently
+        // excludes every record written after midnight on the chosen end date.
+        if (!isNaN(fromDate)) {
+            fromDate.setUTCHours(0, 0, 0, 0);
+        }
+        if (!isNaN(toDate)) {
+            toDate.setUTCHours(23, 59, 59, 999);
+        }
+
         // ---------- load BDM users ----------
         const bdmsSnap = await db.collection('users').where('role', '==', 'bdm').get();
         const bdmMap = {};
@@ -191,8 +201,20 @@ const handler = async (req, res) => {
             return stats.periods[key];
         }
 
+        // Seed every known BDM up-front so the report lists them all even when
+        // they had zero activity in the selected window. Without this, the
+        // table can render completely blank when the date range is narrow.
+        Object.values(bdmMap).forEach((b) => ensure(b.bdmUid, b.bdmName));
+
+        // ---------- counters for response meta (diagnostics) ----------
+        let proposalsScanned = 0;
+        let quotesInRange = 0;
+        let winsInRange = 0;
+        let variationsInRange = 0;
+
         // ---------- bucket proposals into quotes / wins ----------
         for (const p of proposals) {
+            proposalsScanned += 1;
             const bdmUid = p.createdByUid;
             if (!bdmUid) continue;
             const bdmName = p.createdByName;
@@ -212,6 +234,7 @@ const handler = async (req, res) => {
             const quoteDate = pricedAt || lastEditedAt || createdAt;
 
             if (hasPricing && quoteDate && quoteDate >= fromDate && quoteDate <= toDate) {
+                quotesInRange += 1;
                 const value = num(p.pricing.quoteValue);
                 const currency = p.pricing.currency || '';
                 const projectNumber = p.pricing.projectNumber || '';
@@ -244,6 +267,7 @@ const handler = async (req, res) => {
 
             // PROJECT WON = proposal with status 'won'; date = wonDate.
             if (p.status === 'won' && wonDate && wonDate >= fromDate && wonDate <= toDate) {
+                winsInRange += 1;
                 const key = periodKey(wonDate, granularity);
                 if (key) {
                     const period = ensurePeriod(stats, key);
@@ -290,12 +314,34 @@ const handler = async (req, res) => {
             }
         }
 
+        // Fallback: when no proposal points at a project (older data), read
+        // bdmUid directly from the project doc itself.
+        async function resolveOwner(parentProjectId) {
+            if (!parentProjectId) return null;
+            if (projectIdToBdm[parentProjectId]) return projectIdToBdm[parentProjectId];
+            try {
+                const projDoc = await db.collection('projects').doc(parentProjectId).get();
+                if (projDoc.exists) {
+                    const proj = projDoc.data() || {};
+                    if (proj.bdmUid) {
+                        projectIdToBdm[parentProjectId] = {
+                            bdmUid: proj.bdmUid,
+                            bdmName: proj.bdmName || ''
+                        };
+                        return projectIdToBdm[parentProjectId];
+                    }
+                }
+            } catch (_) { /* swallow lookup errors */ }
+            return null;
+        }
+
         for (const v of variations) {
             if (v.status !== 'approved') continue;
             const approvedAt = toJsDate(v.approvedAt) || toJsDate(v.updatedAt);
             if (!approvedAt || approvedAt < fromDate || approvedAt > toDate) continue;
 
-            const owner = projectIdToBdm[v.parentProjectId];
+            variationsInRange += 1;
+            const owner = await resolveOwner(v.parentProjectId);
             if (!owner) continue;
 
             const stats = ensure(owner.bdmUid, owner.bdmName);
@@ -426,7 +472,14 @@ const handler = async (req, res) => {
                 to: toDate.toISOString(),
                 periodKeys: Array.from(allPeriodKeys).sort(),
                 bdms: result,
-                totals: grandTotals
+                totals: grandTotals,
+                meta: {
+                    proposalsScanned,
+                    quotesInRange,
+                    winsInRange,
+                    variationsInRange,
+                    bdmCount: result.length
+                }
             }
         });
     } catch (error) {
