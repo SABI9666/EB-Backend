@@ -185,6 +185,14 @@ const handler = async (req, res) => {
         const proposalsSnap = await db.collection('proposals').get();
         const proposals = proposalsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
+        // ---------- load projects ----------
+        // Wins are taken from the projects collection (per Director portal),
+        // not from proposals.status='won', because projects.{createdAt,bdmUid,
+        // quoteValue} are reliably populated for every won deal whereas
+        // proposals.wonDate is missing on older records.
+        const projectsSnap = await db.collection('projects').get();
+        const projects = projectsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
         // ---------- load variations ----------
         const variationsSnap = await db.collection('variations').get();
         const variations = variationsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -197,6 +205,29 @@ const handler = async (req, res) => {
             if (!variationsByProject[pid]) variationsByProject[pid] = [];
             variationsByProject[pid].push(v);
         });
+
+        // ---------- debug=raw: dump samples for field-shape inspection -----
+        // When the report is unexpectedly empty, hit /api/bdm-analytics?debug=raw
+        // to see the actual field names of the first 3 docs of each collection.
+        // This is the fastest way to diagnose schema drift without DB access.
+        if (req.query.debug === 'raw') {
+            return res.status(200).json({
+                success: true,
+                debug: 'raw',
+                counts: {
+                    proposals: proposals.length,
+                    projects: projects.length,
+                    variations: variations.length,
+                    bdms: Object.keys(bdmMap).length
+                },
+                samples: {
+                    proposals: proposals.slice(0, 3),
+                    projects: projects.slice(0, 3),
+                    variations: variations.slice(0, 3),
+                    bdms: Object.values(bdmMap).slice(0, 3)
+                }
+            });
+        }
 
         // ---------- per-BDM accumulator ----------
         // shape: bdmStats[bdmUid] = {
@@ -306,31 +337,57 @@ const handler = async (req, res) => {
                 }
             }
 
-            // PROJECT WON = proposal with status 'won'. Date prefers wonDate
-            // but falls back to updatedAt for older records that pre-date the
-            // wonDate field.
-            if (p.status === 'won') {
-                const winDate = wonDate || updatedAt || pricedAt;
-                if (winDate && winDate >= fromDate && winDate <= toDate) {
-                    winsInRange += 1;
-                    const key = periodKey(winDate, granularity);
-                    if (key) {
-                        const period = ensurePeriod(stats, key);
-                        const rawValue = num(p.pricing && p.pricing.quoteValue);
-                        const currency = (p.pricing && p.pricing.currency) || '';
-                        period.wonProjects.push({
-                            proposalId: p.id,
-                            projectId: p.projectId || '',
-                            date: winDate.toISOString(),
-                            projectName: p.projectName || '',
-                            clientCompany: client,
-                            currency: 'INR',
-                            value: toInr(rawValue, currency),
-                            originalCurrency: currency,
-                            originalValue: rawValue
-                        });
-                    }
-                }
+        }
+
+        // ---------- bucket wins from PROJECTS collection ----------
+        // The Director portal records each won deal as a project document with
+        // bdmUid / quoteValue / createdAt set at creation time. Reading wins
+        // here (instead of from proposals.status='won') is more reliable
+        // because proposals.wonDate is not always populated on older records.
+        for (const proj of projects) {
+            const bdmUid = proj.bdmUid || (proj.proposal && proj.proposal.createdByUid);
+            if (!bdmUid) continue;
+
+            const wonDate =
+                toJsDate(proj.wonDate) ||
+                toJsDate(proj.createdAt) ||
+                toJsDate(proj.updatedAt);
+            if (!wonDate || wonDate < fromDate || wonDate > toDate) continue;
+
+            winsInRange += 1;
+            const stats = ensure(bdmUid, proj.bdmName || '');
+            const key = periodKey(wonDate, granularity);
+            if (!key) continue;
+            const period = ensurePeriod(stats, key);
+
+            const rawValue =
+                num(proj.quoteValue) ||
+                num(proj.projectValue) ||
+                num(proj.value) ||
+                num(proj.pricing && proj.pricing.quoteValue);
+            const currency =
+                proj.currency ||
+                (proj.pricing && proj.pricing.currency) ||
+                '';
+            const projClient = proj.clientCompany || proj.clientName || '';
+
+            period.wonProjects.push({
+                projectId: proj.id,
+                proposalId: proj.proposalId || '',
+                date: wonDate.toISOString(),
+                projectName: proj.projectName || proj.name || '',
+                clientCompany: projClient,
+                currency: 'INR',
+                value: toInr(rawValue, currency),
+                originalCurrency: currency,
+                originalValue: rawValue
+            });
+
+            // A win from a never-before-seen client is also a "new client"
+            // signal, even when the proposal didn't reach this BDM's quote
+            // bucket in the same window.
+            if (projClient && stats.firstClientSeen[projClient] == null) {
+                stats.firstClientSeen[projClient] = wonDate.getTime();
             }
         }
 
@@ -526,11 +583,14 @@ const handler = async (req, res) => {
                 totals: grandTotals,
                 meta: {
                     proposalsScanned,
+                    projectsScanned: projects.length,
+                    variationsScanned: variations.length,
                     quotesInRange,
                     winsInRange,
                     variationsInRange,
                     bdmCount: result.length,
                     currencyMode: 'INR',
+                    winsSource: 'projects collection',
                     fxRates: CURRENCY_TO_INR
                 }
             }
