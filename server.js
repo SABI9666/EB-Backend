@@ -1,4 +1,4 @@
-// server.js - Complete backend entry point with EMAIL + TIMESHEET + VARIATIONS + TIME-REQUESTS + ALLOCATION-REQUESTS + SCREENING API
+// server.js - Complete backend entry point with EMAIL + TIMESHEET + VARIATIONS + TIME-REQUESTS + ALLOCATION-REQUESTS + SCREENING + BDM-ANALYTICS API
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -8,7 +8,7 @@ require('dotenv').config();
 
 // === IMPORT YOUR AUTH MIDDLEWARE ===
 // <<< MODIFIED: Imports 'verifyToken' from your file
-const { verifyToken } = require('./middleware/auth.js'); 
+const { verifyToken } = require('./middleware/auth.js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -27,7 +27,7 @@ app.use(cors({
     origin: function(origin, callback) {
         // Allow requests with no origin (mobile apps, Postman, etc.)
         if (!origin) return callback(null, true);
-        
+
         // List of allowed origins
         const allowedOrigins = [
             'http://localhost:3000',
@@ -36,7 +36,7 @@ app.use(cors({
             'https://eb-tracker-frontend.vercel.app',
             'https://eb-tracker-frontend-*.vercel.app', // Vercel preview deployments
         ];
-        
+
         // Check if origin matches allowed patterns
         const isAllowed = allowedOrigins.some(allowedOrigin => {
             if (allowedOrigin.includes('*')) {
@@ -45,7 +45,7 @@ app.use(cors({
             }
             return allowedOrigin === origin;
         });
-        
+
         if (isAllowed || origin.includes('vercel.app')) {
             callback(null, true);
         } else {
@@ -56,8 +56,8 @@ app.use(cors({
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: [
-        'Content-Type', 
-        'Authorization', 
+        'Content-Type',
+        'Authorization',
         'X-Requested-With',
         'Accept',
         'Origin',
@@ -101,7 +101,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         message: 'EBTracker Backend API',
-        version: '1.3.0',
+        version: '1.4.0',
         status: 'running',
         endpoints: [
             'GET  /health - Health check',
@@ -110,6 +110,7 @@ app.get('/', (req, res) => {
             'GET  /api/allocation-requests - Get pending requests',
             'PUT  /api/allocation-requests - Director approve/reject',
             'POST /api/screening - Create/manage candidate screenings',
+            'GET  /api/bdm-analytics - BDM analytics report (COO/Director)',
         ]
     });
 });
@@ -139,41 +140,47 @@ try {
 
     console.log('  Loading proposals...');
     const proposalsHandler = require('./api/proposals');
-    
+
     console.log('  Loading projects...');
     const projectsHandler = require('./api/projects');
-    
+
     console.log('  Loading tasks...');
     const tasksHandler = require('./api/tasks');
-    
+
     console.log('  Loading submissions...');
     const submissionsHandler = require('./api/submissions');
-    
+
     console.log('  Loading payments...');
     const paymentsHandler = require('./api/payments');
-    
+
     console.log('  Loading notifications...');
     const notificationsHandler = require('./api/notifications');
-    
+
     console.log('  Loading activities...');
     const activitiesHandler = require('./api/activities');
-    
+
     console.log('  Loading files...');
     const filesHandler = require('./api/files');
-    
+
     console.log('  Loading deliverables...');
     const deliverablesHandler = require('./api/deliverables');
-    
+
     console.log('  Loading users...');
     const usersHandler = require('./api/users');
-    
+
     console.log('  Loading variations...');
     const variationsHandler = require('./api/variations');
-    
+
+    // ============================================
+    // NEW: Load bdm-analytics handler (COO/Director portal)
+    // ============================================
+    console.log('  Loading bdm-analytics...');
+    const bdmAnalyticsHandler = require('./api/bdm-analytics');
+
     console.log('  Loading email...');
     // --- FIX: Import the 'emailHandler' object from the refactored file ---
     const { emailHandler } = require('./api/email');
-    
+
     console.log('  Loading timesheets...');
     const { timesheetsRouter, timeRequestRouter } = require('./api/timesheets');
 
@@ -185,7 +192,7 @@ try {
     // ============================================
     console.log('  Loading allocation-requests...');
     const allocationRequestsHandler = require('./api/allocation-requests');
-    
+
     console.log('  Loading leave-requests...');
     const leaveRequestsHandler = require('./api/leave-requests');
 
@@ -232,6 +239,12 @@ try {
     app.use('/api/deliverables', deliverablesHandler);
     app.use('/api/users', usersHandler);
     app.use('/api/variations', variationsHandler);
+
+    // ============================================
+    // NEW: Register bdm-analytics route (COO/Director portal)
+    // ============================================
+    app.use('/api/bdm-analytics', bdmAnalyticsHandler);
+
     app.use('/api/email', emailHandler);
 
     // --- REVERTED FIX ---
@@ -318,6 +331,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('   *    /api/subventors');
     console.log('   *    /api/daily-expenses');
     console.log('   *    /api/gst-filing');
+    console.log('   GET  /api/bdm-analytics');
     console.log('');
 });
 
