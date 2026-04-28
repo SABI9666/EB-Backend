@@ -99,6 +99,33 @@ function pickAmount(obj, keys) {
     return 0;
 }
 
+// ---------- currency normalization to INR ----------------------------------
+// All monetary values in the response are converted to INR so the report is a
+// single-currency view. Per-record `originalCurrency` and `originalValue` are
+// preserved for reference. Rates are intentionally hardcoded so the endpoint
+// has no external dependency; tweak here when desks need a refresh.
+const CURRENCY_TO_INR = {
+    INR: 1,
+    USD: 83.5,
+    AUD: 55.0,
+    NZD: 51.0,
+    EUR: 90.0,
+    GBP: 105.0,
+    SGD: 62.0,
+    AED: 22.7,
+    CAD: 61.0,
+    JPY: 0.55
+};
+
+function toInr(value, currency) {
+    const v = num(value);
+    if (!v) return 0;
+    const c = String(currency || '').trim().toUpperCase();
+    if (!c) return v; // blank currency = assume already INR
+    const rate = CURRENCY_TO_INR[c];
+    return rate != null ? v * rate : v; // unknown currency = pass-through
+}
+
 // ---------- main handler -----------------------------------------------------
 
 const handler = async (req, res) => {
@@ -123,9 +150,11 @@ const handler = async (req, res) => {
 
         // Default lookback: 2 years back from today, up to today.
         const now = new Date();
+        // When no explicit range is given, look back 5 years so the default
+        // view shows historical activity rather than only the last two.
         const fromDate = from
             ? new Date(from)
-            : new Date(now.getFullYear() - 2, 0, 1);
+            : new Date(now.getFullYear() - 5, 0, 1);
         const toDate = to ? new Date(to) : now;
 
         // Normalize boundaries: from = start-of-day UTC, to = end-of-day UTC.
@@ -223,21 +252,31 @@ const handler = async (req, res) => {
             const client = (p.clientCompany || '').trim();
             const pricedAt = toJsDate(p.pricing && p.pricing.pricedAt);
             const lastEditedAt = toJsDate(p.pricing && p.pricing.lastEditedAt);
+            const submittedAt = toJsDate(p.submittedToClientAt) || toJsDate(p.submittedAt);
+            const updatedAt = toJsDate(p.updatedAt);
             const createdAt = toJsDate(p.createdAt);
             const wonDate = toJsDate(p.wonDate);
 
-            // QUOTE = proposal that has pricing; quote date = pricedAt (or
-            // lastEditedAt fallback, then createdAt as last resort).
+            // QUOTE = any proposal that's been priced, submitted, or otherwise
+            // moved past draft. We accept multiple signals because field names
+            // have drifted across releases. Date falls back through the most
+            // recent signal we can find.
+            const QUOTE_STATUSES = new Set(['priced', 'sent', 'submitted', 'won', 'lost']);
             const hasPricing =
-                p.pricing &&
-                (p.pricing.quoteValue != null || p.pricing.projectNumber);
-            const quoteDate = pricedAt || lastEditedAt || createdAt;
+                (p.pricing &&
+                    (p.pricing.quoteValue != null ||
+                        p.pricing.projectNumber ||
+                        p.pricing.pricedAt ||
+                        p.pricing.lastEditedAt)) ||
+                QUOTE_STATUSES.has(p.status);
+            const quoteDate = pricedAt || lastEditedAt || submittedAt || updatedAt || createdAt;
 
             if (hasPricing && quoteDate && quoteDate >= fromDate && quoteDate <= toDate) {
                 quotesInRange += 1;
-                const value = num(p.pricing.quoteValue);
-                const currency = p.pricing.currency || '';
-                const projectNumber = p.pricing.projectNumber || '';
+                const rawValue = num(p.pricing && p.pricing.quoteValue);
+                const currency = (p.pricing && p.pricing.currency) || '';
+                const projectNumber = (p.pricing && p.pricing.projectNumber) || '';
+                const valueInr = toInr(rawValue, currency);
                 const key = periodKey(quoteDate, granularity);
                 if (key) {
                     const period = ensurePeriod(stats, key);
@@ -247,8 +286,10 @@ const handler = async (req, res) => {
                         projectName: p.projectName || '',
                         clientCompany: client,
                         projectNumber,
-                        currency,
-                        value,
+                        currency: 'INR',
+                        value: valueInr,
+                        originalCurrency: currency,
+                        originalValue: rawValue,
                         status: p.status || ''
                     });
                     if (client) period.clients.add(client);
@@ -265,23 +306,30 @@ const handler = async (req, res) => {
                 }
             }
 
-            // PROJECT WON = proposal with status 'won'; date = wonDate.
-            if (p.status === 'won' && wonDate && wonDate >= fromDate && wonDate <= toDate) {
-                winsInRange += 1;
-                const key = periodKey(wonDate, granularity);
-                if (key) {
-                    const period = ensurePeriod(stats, key);
-                    const value = num(p.pricing && p.pricing.quoteValue);
-                    const currency = (p.pricing && p.pricing.currency) || '';
-                    period.wonProjects.push({
-                        proposalId: p.id,
-                        projectId: p.projectId || '',
-                        date: wonDate.toISOString(),
-                        projectName: p.projectName || '',
-                        clientCompany: client,
-                        currency,
-                        value
-                    });
+            // PROJECT WON = proposal with status 'won'. Date prefers wonDate
+            // but falls back to updatedAt for older records that pre-date the
+            // wonDate field.
+            if (p.status === 'won') {
+                const winDate = wonDate || updatedAt || pricedAt;
+                if (winDate && winDate >= fromDate && winDate <= toDate) {
+                    winsInRange += 1;
+                    const key = periodKey(winDate, granularity);
+                    if (key) {
+                        const period = ensurePeriod(stats, key);
+                        const rawValue = num(p.pricing && p.pricing.quoteValue);
+                        const currency = (p.pricing && p.pricing.currency) || '';
+                        period.wonProjects.push({
+                            proposalId: p.id,
+                            projectId: p.projectId || '',
+                            date: winDate.toISOString(),
+                            projectName: p.projectName || '',
+                            clientCompany: client,
+                            currency: 'INR',
+                            value: toInr(rawValue, currency),
+                            originalCurrency: currency,
+                            originalValue: rawValue
+                        });
+                    }
                 }
             }
         }
@@ -349,7 +397,7 @@ const handler = async (req, res) => {
             if (!key) continue;
             const period = ensurePeriod(stats, key);
 
-            const value = pickAmount(v, [
+            const rawValue = pickAmount(v, [
                 'value',
                 'approvedValue',
                 'amount',
@@ -357,6 +405,7 @@ const handler = async (req, res) => {
                 'totalValue',
                 'variationValue'
             ]);
+            const currency = v.currency || '';
 
             period.variations.push({
                 variationId: v.id,
@@ -365,8 +414,10 @@ const handler = async (req, res) => {
                 projectName: v.parentProjectName || '',
                 clientCompany: v.clientCompany || '',
                 estimatedHours: num(v.estimatedHours),
-                currency: v.currency || '',
-                value
+                currency: 'INR',
+                value: toInr(rawValue, currency),
+                originalCurrency: currency,
+                originalValue: rawValue
             });
         }
 
@@ -478,7 +529,9 @@ const handler = async (req, res) => {
                     quotesInRange,
                     winsInRange,
                     variationsInRange,
-                    bdmCount: result.length
+                    bdmCount: result.length,
+                    currencyMode: 'INR',
+                    fxRates: CURRENCY_TO_INR
                 }
             }
         });
