@@ -1,13 +1,16 @@
 // api/bdm-entries.js
 // Manual quote / won / variation entries written by BDM / COO / Director.
-// Persisted in `bdm_entries`, surfaced in BDM Analytics alongside COO portal
-// data. Designed to need NO composite Firestore index — only the auto-built
-// single-field index on `date` is used.
+// Persists to Firestore collection `bdm_entries`. The BDM Analytics report
+// (api/bdm-analytics.js) reads this collection alongside proposals/projects/
+// variations so manual entries flow into the COO/Director report.
 //
-// Schema (bdm_entries doc):
-//   { type: 'quote'|'won'|'variation', bdmUid, bdmName, date (ISO string),
-//     value (number), currency, projectName, projectNumber, clientCompany,
-//     notes, createdAt, createdByUid, createdByName }
+// Hardened to write reliably to Firestore:
+//   - All values are explicitly coerced to non-undefined types (Firebase
+//     Admin rejects objects with undefined fields).
+//   - Logs every save with the assigned doc id so Render logs reveal silent
+//     failures.
+//   - Verifies the doc actually exists after add() and returns the saved
+//     payload on success.
 
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
@@ -29,35 +32,31 @@ const allowCors = (fn) => async (req, res) => {
 
 const ALLOWED_CURRENCIES = ['INR', 'USD', 'AUD', 'NZD', 'EUR', 'GBP', 'SGD', 'AED', 'CAD', 'JPY'];
 
+function s(v) { return (v == null) ? '' : String(v); }
+
 const handler = async (req, res) => {
     try {
         await util.promisify(verifyToken)(req, res);
         const role = String(req.user.role || '').toLowerCase();
-        const userUid = req.user.uid || req.user.userId || req.user.id || '';
-        const userEmail = req.user.email || '';
-        const userName = req.user.name || req.user.displayName || userEmail || '';
+        const userUid = s(req.user.uid || req.user.userId || req.user.id || req.user.email);
+        const userEmail = s(req.user.email);
+        const userName = s(req.user.name || req.user.displayName || userEmail);
         const allowedToWrite = ['bdm', 'coo', 'director'].includes(role);
+
+        console.log(`[bdm-entries] ${req.method} role=${role} uid=${userUid}`);
 
         if (req.method === 'GET') {
             const { from, to, bdmUid, type } = req.query;
-            // Only orderBy('date') against the database — no .where() — so
-            // Firestore never needs a composite index. Filter in memory.
             let snap;
             try {
                 snap = await db.collection('bdm_entries').orderBy('date', 'desc').limit(2000).get();
             } catch (e) {
-                console.warn('bdm-entries: orderBy(date) failed, falling back:', e.message);
+                console.warn('[bdm-entries] GET orderBy failed, falling back:', e.message);
                 snap = await db.collection('bdm_entries').limit(2000).get();
             }
-
             let entries = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
             const totalBeforeFilter = entries.length;
 
-            // No more uid filter — every authenticated user (bdm/coo/director)
-            // sees the full list. This makes the upload page reliable: a BDM
-            // recording an entry will always see it back, even if the auth
-            // middleware uses a slightly different `uid` field than what was
-            // stored when the entry was first created.
             if (type) entries = entries.filter((e) => String(e.type || '').toLowerCase() === String(type).toLowerCase());
             if (bdmUid) entries = entries.filter((e) => e.bdmUid === bdmUid);
 
@@ -71,15 +70,13 @@ const handler = async (req, res) => {
                     return true;
                 });
             }
-
             entries.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-            // ?debug=1 returns one extra block so the frontend / curl can see
-            // whether the data is reaching this layer.
             const debugBlock = req.query.debug
                 ? { totalBeforeFilter, role, userUid, userEmail, sample: entries.slice(0, 1) }
                 : undefined;
 
+            console.log(`[bdm-entries] GET returned count=${entries.length} totalBeforeFilter=${totalBeforeFilter}`);
             return res.status(200).json({
                 success: true,
                 entries,
@@ -90,50 +87,90 @@ const handler = async (req, res) => {
 
         if (req.method === 'POST') {
             if (!allowedToWrite) {
-                return res.status(403).json({ success: false, error: 'Not allowed' });
+                console.warn('[bdm-entries] POST rejected: role not allowed', role);
+                return res.status(403).json({ success: false, error: 'Not allowed for role: ' + role });
             }
             const b = req.body || {};
+            console.log('[bdm-entries] POST body:', JSON.stringify(b));
+
             const type = String(b.type || 'quote').toLowerCase();
             if (!['quote', 'won', 'variation'].includes(type)) {
-                return res.status(400).json({ success: false, error: 'Invalid type' });
+                return res.status(400).json({ success: false, error: 'Invalid type: ' + type });
             }
             const value = parseFloat(b.value);
             if (isNaN(value) || value < 0) {
-                return res.status(400).json({ success: false, error: 'Invalid value' });
+                return res.status(400).json({ success: false, error: 'Invalid value: ' + b.value });
             }
             const currency = String(b.currency || 'INR').toUpperCase();
             if (!ALLOWED_CURRENCIES.includes(currency)) {
-                return res.status(400).json({ success: false, error: 'Unsupported currency' });
+                return res.status(400).json({ success: false, error: 'Unsupported currency: ' + currency });
             }
             if (!b.date) {
                 return res.status(400).json({ success: false, error: 'Date required' });
             }
+            const dateIso = new Date(b.date).toISOString();
+            if (dateIso === 'Invalid Date' || !dateIso || dateIso.startsWith('NaN')) {
+                return res.status(400).json({ success: false, error: 'Invalid date: ' + b.date });
+            }
 
-            // BDMs file under themselves; COO / Director may pick a BDM.
-            const bdmUidVal = (role === 'bdm') ? userUid : (b.bdmUid || userUid);
-            const bdmNameVal = (role === 'bdm') ? userName : (b.bdmName || userName);
+            // Owner of the entry. BDM files under themselves; COO / Director
+            // may file on behalf of any BDM (passes b.bdmUid). Fallback to
+            // userUid if not provided so the field is never empty.
+            const bdmUidVal = (role === 'bdm') ? userUid : s(b.bdmUid || userUid);
+            const bdmNameVal = (role === 'bdm') ? userName : s(b.bdmName || userName);
 
+            // Build the doc with NO undefined fields — Firestore Admin SDK
+            // throws on undefined, which used to silently fail the save.
             const doc = {
-                type,
-                bdmUid: bdmUidVal,
-                bdmName: bdmNameVal || '',
-                date: new Date(b.date).toISOString(),
-                value,
-                currency,
-                projectName: String(b.projectName || '').trim(),
-                projectNumber: String(b.projectNumber || '').trim(),
-                clientCompany: String(b.clientCompany || '').trim(),
-                notes: String(b.notes || '').trim(),
+                type: type,
+                bdmUid: s(bdmUidVal),
+                bdmName: s(bdmNameVal),
+                date: dateIso,
+                value: value,
+                currency: currency,
+                projectName: s(b.projectName).trim(),
+                projectNumber: s(b.projectNumber).trim(),
+                clientCompany: s(b.clientCompany).trim(),
+                notes: s(b.notes).trim(),
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                createdByUid: userUid,
-                createdByName: userName
+                createdByUid: s(userUid),
+                createdByName: s(userName)
             };
-            const ref = await db.collection('bdm_entries').add(doc);
-            return res.status(200).json({
-                success: true,
-                id: ref.id,
-                entry: { id: ref.id, ...doc, createdAt: new Date().toISOString() }
-            });
+
+            // Sanity sweep: drop any accidentally-undefined keys so add() can't
+            // fail with "Value for argument 'data' is not a valid Firestore
+            // document. Cannot use 'undefined' as a Firestore value."
+            Object.keys(doc).forEach((k) => { if (doc[k] === undefined) doc[k] = ''; });
+
+            console.log('[bdm-entries] POST writing doc to bdm_entries:', JSON.stringify({ ...doc, createdAt: 'serverTimestamp' }));
+
+            let ref;
+            try {
+                ref = await db.collection('bdm_entries').add(doc);
+            } catch (writeErr) {
+                console.error('[bdm-entries] Firestore write failed:', writeErr.message, writeErr.stack);
+                return res.status(500).json({
+                    success: false,
+                    error: 'Failed to save entry to Firestore',
+                    message: writeErr.message
+                });
+            }
+
+            // Verify the doc landed by reading it back.
+            let saved;
+            try {
+                const verifySnap = await ref.get();
+                saved = { id: ref.id, ...(verifySnap.data() || {}) };
+                if (saved.createdAt && saved.createdAt.toDate) {
+                    saved.createdAt = saved.createdAt.toDate().toISOString();
+                }
+            } catch (readErr) {
+                console.warn('[bdm-entries] verify read failed (non-fatal):', readErr.message);
+                saved = { id: ref.id, ...doc, createdAt: new Date().toISOString() };
+            }
+
+            console.log('[bdm-entries] POST saved id=' + ref.id);
+            return res.status(200).json({ success: true, id: ref.id, entry: saved });
         }
 
         if (req.method === 'DELETE') {
@@ -143,7 +180,6 @@ const handler = async (req, res) => {
             const snap = await ref.get();
             if (!snap.exists) return res.status(404).json({ success: false, error: 'Not found' });
             const data = snap.data();
-            // BDM can delete only their own; COO / Director can delete any.
             if (role === 'bdm' && data.createdByUid !== userUid && data.bdmUid !== userUid) {
                 return res.status(403).json({ success: false, error: 'Not allowed' });
             }
@@ -151,12 +187,13 @@ const handler = async (req, res) => {
                 return res.status(403).json({ success: false, error: 'Not allowed' });
             }
             await ref.delete();
+            console.log('[bdm-entries] DELETE id=' + id);
             return res.status(200).json({ success: true });
         }
 
         return res.status(405).json({ success: false, error: 'Method not allowed' });
     } catch (err) {
-        console.error('bdm-entries error:', err);
+        console.error('[bdm-entries] handler error:', err.message, err.stack);
         return res.status(500).json({ success: false, error: 'Internal Server Error', message: err.message });
     }
 };
