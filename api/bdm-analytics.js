@@ -100,30 +100,18 @@ function pickAmount(obj, keys) {
 }
 
 // ---------- currency normalization to INR ----------------------------------
-// All monetary values in the response are converted to INR so the report is a
-// single-currency view. Per-record `originalCurrency` and `originalValue` are
-// preserved for reference. Rates are intentionally hardcoded so the endpoint
-// has no external dependency; tweak here when desks need a refresh.
 const CURRENCY_TO_INR = {
-    INR: 1,
-    USD: 83.5,
-    AUD: 55.0,
-    NZD: 51.0,
-    EUR: 90.0,
-    GBP: 105.0,
-    SGD: 62.0,
-    AED: 22.7,
-    CAD: 61.0,
-    JPY: 0.55
+    INR: 1, USD: 83.5, AUD: 55.0, NZD: 51.0, EUR: 90.0,
+    GBP: 105.0, SGD: 62.0, AED: 22.7, CAD: 61.0, JPY: 0.55
 };
 
 function toInr(value, currency) {
     const v = num(value);
     if (!v) return 0;
     const c = String(currency || '').trim().toUpperCase();
-    if (!c) return v; // blank currency = assume already INR
+    if (!c) return v;
     const rate = CURRENCY_TO_INR[c];
-    return rate != null ? v * rate : v; // unknown currency = pass-through
+    return rate != null ? v * rate : v;
 }
 
 // ---------- main handler -----------------------------------------------------
@@ -148,27 +136,39 @@ const handler = async (req, res) => {
             return res.status(400).json({ success: false, error: 'Invalid granularity' });
         }
 
-        // Default lookback: 2 years back from today, up to today.
+        // Sectioned response. Default = `summary` returns lifetime totals plus
+        // per-BDM / per-period numeric rollups (no per-record arrays).
+        // `quotes` / `wins` / `variations` return only that flat detail list.
+        const section = String(req.query.section || 'summary').toLowerCase();
+        if (!['summary', 'quotes', 'wins', 'variations', 'all'].includes(section)) {
+            return res.status(400).json({ success: false, error: 'Invalid section' });
+        }
+
         const now = new Date();
-        // When no explicit range is given, look back 5 years so the default
-        // view shows historical activity rather than only the last two.
-        const fromDate = from
-            ? new Date(from)
-            : new Date(now.getFullYear() - 5, 0, 1);
+        const fromDate = from ? new Date(from) : new Date(now.getFullYear() - 5, 0, 1);
         const toDate = to ? new Date(to) : now;
+        if (!isNaN(fromDate)) fromDate.setUTCHours(0, 0, 0, 0);
+        if (!isNaN(toDate)) toDate.setUTCHours(23, 59, 59, 999);
 
-        // Normalize boundaries: from = start-of-day UTC, to = end-of-day UTC.
-        // Without this, `to=YYYY-MM-DD` parses to 00:00:00Z and silently
-        // excludes every record written after midnight on the chosen end date.
-        if (!isNaN(fromDate)) {
-            fromDate.setUTCHours(0, 0, 0, 0);
-        }
-        if (!isNaN(toDate)) {
-            toDate.setUTCHours(23, 59, 59, 999);
-        }
+        // KEY DESIGN CHANGE — bounded reads via .orderBy().limit() so the
+        // function does fixed-size I/O regardless of workspace size. This is
+        // what fixes the persistent "Stream idle timeout".
+        const SCAN_LIMIT = Math.max(50, Math.min(parseInt(req.query.limit, 10) || 1500, 5000));
 
-        // ---------- load BDM users ----------
-        const bdmsSnap = await db.collection('users').where('role', '==', 'bdm').get();
+        const [bdmsSnap, proposalsSnap, projectsSnap, variationsSnap] = await Promise.all([
+            db.collection('users').where('role', '==', 'bdm').get(),
+            db.collection('proposals').orderBy('updatedAt', 'desc').limit(SCAN_LIMIT).get(),
+            db.collection('projects').orderBy('createdAt', 'desc').limit(SCAN_LIMIT).get(),
+            db.collection('variations').orderBy('updatedAt', 'desc').limit(SCAN_LIMIT).get()
+        ]);
+
+        const truncated = {
+            proposals: proposalsSnap.size >= SCAN_LIMIT,
+            projects: projectsSnap.size >= SCAN_LIMIT,
+            variations: variationsSnap.size >= SCAN_LIMIT,
+            scanLimit: SCAN_LIMIT
+        };
+
         const bdmMap = {};
         bdmsSnap.forEach((doc) => {
             const u = doc.data();
@@ -179,37 +179,13 @@ const handler = async (req, res) => {
             };
         });
 
-        // ---------- load proposals ----------
-        // We need every proposal for the lookback range. Filter in-memory because
-        // the relevant date isn't always the same field (`pricedAt` vs `wonDate`).
-        const proposalsSnap = await db.collection('proposals').get();
         const proposals = proposalsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-        // ---------- load projects ----------
-        // Wins are taken from the projects collection (per Director portal),
-        // not from proposals.status='won', because projects.{createdAt,bdmUid,
-        // quoteValue} are reliably populated for every won deal whereas
-        // proposals.wonDate is missing on older records.
-        const projectsSnap = await db.collection('projects').get();
         const projects = projectsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-        // ---------- load variations ----------
-        const variationsSnap = await db.collection('variations').get();
         const variations = variationsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-        // Index variations by parent project for cheap lookup.
-        const variationsByProject = {};
-        variations.forEach((v) => {
-            const pid = v.parentProjectId;
-            if (!pid) return;
-            if (!variationsByProject[pid]) variationsByProject[pid] = [];
-            variationsByProject[pid].push(v);
-        });
+        const projectById = {};
+        projects.forEach((proj) => { projectById[proj.id] = proj; });
 
-        // ---------- debug=raw: dump samples for field-shape inspection -----
-        // When the report is unexpectedly empty, hit /api/bdm-analytics?debug=raw
-        // to see the actual field names of the first 3 docs of each collection.
-        // This is the fastest way to diagnose schema drift without DB access.
         if (req.query.debug === 'raw') {
             return res.status(200).json({
                 success: true,
@@ -225,15 +201,12 @@ const handler = async (req, res) => {
                     projects: projects.slice(0, 3),
                     variations: variations.slice(0, 3),
                     bdms: Object.values(bdmMap).slice(0, 3)
-                }
+                },
+                truncated
             });
         }
 
         // ---------- per-BDM accumulator ----------
-        // shape: bdmStats[bdmUid] = {
-        //   info, periods: { [key]: { quotes:[], wonProjects:[], variations:[], clients:Set } },
-        //   firstClientSeen: { [client]: ms-timestamp }
-        // }
         const bdmStats = {};
         function ensure(bdmUid, bdmName) {
             if (!bdmStats[bdmUid]) {
@@ -250,55 +223,30 @@ const handler = async (req, res) => {
         function ensurePeriod(stats, key) {
             if (!stats.periods[key]) {
                 stats.periods[key] = {
-                    key,
-                    quotes: [],
-                    wonProjects: [],
-                    variations: [],
-                    clients: new Set(),
-                    newClients: new Set()
+                    key, quotes: [], wonProjects: [], variations: [],
+                    clients: new Set(), newClients: new Set()
                 };
             }
             return stats.periods[key];
         }
 
-        // Seed every known BDM up-front so the report lists them all even when
-        // they had zero activity in the selected window. Without this, the
-        // table can render completely blank when the date range is narrow.
         Object.values(bdmMap).forEach((b) => ensure(b.bdmUid, b.bdmName));
 
-        // ---------- counters for response meta (diagnostics) ----------
-        let proposalsScanned = 0;
-        let quotesInRange = 0;
-        let winsInRange = 0;
-        let variationsInRange = 0;
+        let proposalsScanned = 0, quotesInRange = 0, winsInRange = 0, variationsInRange = 0;
 
-        // ---------- lifetime accumulator (ignores from/to filter) ----------
-        // Always populated regardless of the requested window so the report
-        // can surface real numbers even when the user's date filter is narrow
-        // or there is simply no recent activity.
         const lifetimeTotals = {
-            numQuotes: 0,
-            quoteValueTotal: 0,
-            numProjectsWon: 0,
-            projectValue: 0,
-            variationValue: 0,
-            totalValue: 0,
-            numNewClients: 0
+            numQuotes: 0, quoteValueTotal: 0, numProjectsWon: 0,
+            projectValue: 0, variationValue: 0, totalValue: 0, numNewClients: 0
         };
-        const lifetimePerBdm = {}; // bdmUid -> totals (same shape)
+        const lifetimePerBdm = {};
         function bumpLifetime(bdmUid, bdmName, kind, valueInr) {
             if (!lifetimePerBdm[bdmUid]) {
                 lifetimePerBdm[bdmUid] = {
                     bdmUid,
                     bdmName: bdmName || (bdmMap[bdmUid] && bdmMap[bdmUid].bdmName) || 'Unknown',
-                    numQuotes: 0,
-                    quoteValueTotal: 0,
-                    numProjectsWon: 0,
-                    projectValue: 0,
-                    variationValue: 0,
-                    totalValue: 0,
-                    numNewClients: 0,
-                    clients: new Set()
+                    numQuotes: 0, quoteValueTotal: 0, numProjectsWon: 0,
+                    projectValue: 0, variationValue: 0, totalValue: 0,
+                    numNewClients: 0, clients: new Set()
                 };
             }
             const b = lifetimePerBdm[bdmUid];
@@ -306,10 +254,9 @@ const handler = async (req, res) => {
             else if (kind === 'win') { b.numProjectsWon += 1; b.projectValue += valueInr; b.totalValue += valueInr; lifetimeTotals.numProjectsWon += 1; lifetimeTotals.projectValue += valueInr; lifetimeTotals.totalValue += valueInr; }
             else if (kind === 'variation') { b.variationValue += valueInr; b.totalValue += valueInr; lifetimeTotals.variationValue += valueInr; lifetimeTotals.totalValue += valueInr; }
         }
-        // Pre-seed all BDMs in the lifetime map so they always appear, even at zero.
         Object.values(bdmMap).forEach((b) => bumpLifetime(b.bdmUid, b.bdmName, '_seed', 0));
 
-        // ---------- bucket proposals into quotes / wins ----------
+        // ---------- bucket proposals into quotes ----------
         for (const p of proposals) {
             proposalsScanned += 1;
             const bdmUid = p.createdByUid;
@@ -323,23 +270,19 @@ const handler = async (req, res) => {
             const submittedAt = toJsDate(p.submittedToClientAt) || toJsDate(p.submittedAt);
             const updatedAt = toJsDate(p.updatedAt);
             const createdAt = toJsDate(p.createdAt);
-            const wonDate = toJsDate(p.wonDate);
 
-            // QUOTE = any proposal that's been priced, submitted, or otherwise
-            // moved past draft. We accept multiple signals because field names
-            // have drifted across releases. Date falls back through the most
-            // recent signal we can find.
-            const QUOTE_STATUSES = new Set(['priced', 'sent', 'submitted', 'won', 'lost']);
-            const hasPricing =
-                (p.pricing &&
-                    (p.pricing.quoteValue != null ||
-                        p.pricing.projectNumber ||
-                        p.pricing.pricedAt ||
-                        p.pricing.lastEditedAt)) ||
-                QUOTE_STATUSES.has(p.status);
+            // QUOTE = proposal that the COO portal has actually priced.
+            // pricing.* is set by the `add_pricing`/`update_pricing` actions.
+            const QUOTE_STATUSES = new Set(['priced', 'pricing_complete', 'won', 'lost']);
+            const hasCooPricing = p.pricing && (
+                p.pricing.quoteValue != null ||
+                p.pricing.pricedAt ||
+                p.pricing.lastEditedAt ||
+                p.pricing.pricedBy
+            );
+            const hasPricing = hasCooPricing || QUOTE_STATUSES.has(p.status);
             const quoteDate = pricedAt || lastEditedAt || submittedAt || updatedAt || createdAt;
 
-            // Lifetime tally: count every priced proposal regardless of window.
             if (hasPricing) {
                 const _rawValue = num(p.pricing && p.pricing.quoteValue);
                 const _currency = (p.pricing && p.pricing.currency) || '';
@@ -366,6 +309,8 @@ const handler = async (req, res) => {
                     period.quotes.push({
                         proposalId: p.id,
                         date: quoteDate.toISOString(),
+                        pricedAt: pricedAt ? pricedAt.toISOString() : null,
+                        pricedByName: (p.pricing && p.pricing.pricedByName) || '',
                         projectName: p.projectName || '',
                         clientCompany: client,
                         projectNumber,
@@ -376,57 +321,29 @@ const handler = async (req, res) => {
                         status: p.status || ''
                     });
                     if (client) period.clients.add(client);
-
-                    // Track first-ever client appearance for this BDM (used for "new clients").
                     const ms = quoteDate.getTime();
-                    if (
-                        client &&
-                        (stats.firstClientSeen[client] == null ||
-                            ms < stats.firstClientSeen[client])
-                    ) {
+                    if (client && (stats.firstClientSeen[client] == null || ms < stats.firstClientSeen[client])) {
                         stats.firstClientSeen[client] = ms;
                     }
                 }
             }
-
         }
 
-        // ---------- bucket wins from PROJECTS collection ----------
-        // The Director portal records each won deal as a project document with
-        // bdmUid / quoteValue / createdAt set at creation time. Reading wins
-        // here (instead of from proposals.status='won') is more reliable
-        // because proposals.wonDate is not always populated on older records.
+        // ---------- bucket wins from PROJECTS ----------
         for (const proj of projects) {
             const bdmUid = proj.bdmUid || (proj.proposal && proj.proposal.createdByUid);
             if (!bdmUid) continue;
-
-            const wonDate =
-                toJsDate(proj.wonDate) ||
-                toJsDate(proj.createdAt) ||
-                toJsDate(proj.updatedAt);
-
-            const rawValue =
-                num(proj.quoteValue) ||
-                num(proj.projectValue) ||
-                num(proj.value) ||
-                num(proj.pricing && proj.pricing.quoteValue);
-            const currency =
-                proj.currency ||
-                (proj.pricing && proj.pricing.currency) ||
-                '';
-
-            // Lifetime tally: every project doc is a win, regardless of window.
+            const wonDate = toJsDate(proj.wonDate) || toJsDate(proj.createdAt) || toJsDate(proj.updatedAt);
+            const rawValue = num(proj.quoteValue) || num(proj.projectValue) || num(proj.value) || num(proj.pricing && proj.pricing.quoteValue);
+            const currency = proj.currency || (proj.pricing && proj.pricing.currency) || '';
             bumpLifetime(bdmUid, proj.bdmName || '', 'win', toInr(rawValue, currency));
-
             if (!wonDate || wonDate < fromDate || wonDate > toDate) continue;
-
             winsInRange += 1;
             const stats = ensure(bdmUid, proj.bdmName || '');
             const key = periodKey(wonDate, granularity);
             if (!key) continue;
             const period = ensurePeriod(stats, key);
             const projClient = proj.clientCompany || proj.clientName || '';
-
             period.wonProjects.push({
                 projectId: proj.id,
                 proposalId: proj.proposalId || '',
@@ -438,17 +355,11 @@ const handler = async (req, res) => {
                 originalCurrency: currency,
                 originalValue: rawValue
             });
-
-            // A win from a never-before-seen client is also a "new client"
-            // signal, even when the proposal didn't reach this BDM's quote
-            // bucket in the same window.
             if (projClient && stats.firstClientSeen[projClient] == null) {
                 stats.firstClientSeen[projClient] = wonDate.getTime();
             }
         }
 
-        // After scanning every quote, compute "new clients" per period (this
-        // BDM's first quote for that client).
         for (const stats of Object.values(bdmStats)) {
             for (const period of Object.values(stats.periods)) {
                 period.quotes.forEach((q) => {
@@ -462,70 +373,37 @@ const handler = async (req, res) => {
         }
 
         // ---------- bucket variations ----------
-        // We need to know which BDM owns each variation's parent project. The
-        // parent project's BDM = the proposal that created the project. Build
-        // a project -> BDM lookup via proposals.
         const projectIdToBdm = {};
         for (const p of proposals) {
             if (p.projectId && p.createdByUid) {
-                projectIdToBdm[p.projectId] = {
-                    bdmUid: p.createdByUid,
-                    bdmName: p.createdByName || ''
-                };
+                projectIdToBdm[p.projectId] = { bdmUid: p.createdByUid, bdmName: p.createdByName || '' };
             }
         }
-
-        // Fallback: when no proposal points at a project (older data), read
-        // bdmUid directly from the project doc itself.
-        async function resolveOwner(parentProjectId) {
+        function resolveOwner(parentProjectId) {
             if (!parentProjectId) return null;
             if (projectIdToBdm[parentProjectId]) return projectIdToBdm[parentProjectId];
-            try {
-                const projDoc = await db.collection('projects').doc(parentProjectId).get();
-                if (projDoc.exists) {
-                    const proj = projDoc.data() || {};
-                    if (proj.bdmUid) {
-                        projectIdToBdm[parentProjectId] = {
-                            bdmUid: proj.bdmUid,
-                            bdmName: proj.bdmName || ''
-                        };
-                        return projectIdToBdm[parentProjectId];
-                    }
-                }
-            } catch (_) { /* swallow lookup errors */ }
+            const proj = projectById[parentProjectId];
+            if (proj && proj.bdmUid) {
+                projectIdToBdm[parentProjectId] = { bdmUid: proj.bdmUid, bdmName: proj.bdmName || '' };
+                return projectIdToBdm[parentProjectId];
+            }
             return null;
         }
 
         for (const v of variations) {
             if (v.status !== 'approved') continue;
             const approvedAt = toJsDate(v.approvedAt) || toJsDate(v.updatedAt);
-
-            const rawValue = pickAmount(v, [
-                'value',
-                'approvedValue',
-                'amount',
-                'quoteValue',
-                'totalValue',
-                'variationValue'
-            ]);
+            const rawValue = pickAmount(v, ['value', 'approvedValue', 'amount', 'quoteValue', 'totalValue', 'variationValue']);
             const currency = v.currency || '';
-
-            // Lifetime tally happens regardless of date window.
-            const owner = await resolveOwner(v.parentProjectId);
-            if (owner) {
-                bumpLifetime(owner.bdmUid, owner.bdmName, 'variation', toInr(rawValue, currency));
-            }
-
+            const owner = resolveOwner(v.parentProjectId);
+            if (owner) bumpLifetime(owner.bdmUid, owner.bdmName, 'variation', toInr(rawValue, currency));
             if (!approvedAt || approvedAt < fromDate || approvedAt > toDate) continue;
-
             variationsInRange += 1;
             if (!owner) continue;
-
             const stats = ensure(owner.bdmUid, owner.bdmName);
             const key = periodKey(approvedAt, granularity);
             if (!key) continue;
             const period = ensurePeriod(stats, key);
-
             period.variations.push({
                 variationId: v.id,
                 date: approvedAt.toISOString(),
@@ -541,27 +419,16 @@ const handler = async (req, res) => {
         }
 
         // ---------- shape response ----------
-        // Per-BDM rows for every period observed; plus an "overall" total row
-        // for that BDM across the whole [from, to] range.
         const allPeriodKeys = new Set();
         const result = Object.values(bdmStats).map((stats) => {
             const periodRows = Object.values(stats.periods)
                 .sort((a, b) => a.key.localeCompare(b.key))
                 .map((period) => {
                     allPeriodKeys.add(period.key);
-                    const projectValue = period.wonProjects.reduce(
-                        (s, w) => s + num(w.value),
-                        0
-                    );
-                    const variationValue = period.variations.reduce(
-                        (s, v) => s + num(v.value),
-                        0
-                    );
-                    const quoteValueTotal = period.quotes.reduce(
-                        (s, q) => s + num(q.value),
-                        0
-                    );
-                    return {
+                    const projectValue = period.wonProjects.reduce((s, w) => s + num(w.value), 0);
+                    const variationValue = period.variations.reduce((s, v) => s + num(v.value), 0);
+                    const quoteValueTotal = period.quotes.reduce((s, q) => s + num(q.value), 0);
+                    const row = {
                         period: period.key,
                         numQuotes: period.quotes.length,
                         quoteValueTotal,
@@ -569,36 +436,23 @@ const handler = async (req, res) => {
                         projectValue,
                         variationValue,
                         totalValue: projectValue + variationValue,
-                        numNewClients: period.newClients.size,
-                        quotes: period.quotes,
-                        wonProjects: period.wonProjects,
-                        variations: period.variations
+                        numNewClients: period.newClients.size
                     };
+                    if (section === 'all' || section === 'quotes') row.quotes = period.quotes;
+                    if (section === 'all' || section === 'wins') row.wonProjects = period.wonProjects;
+                    if (section === 'all' || section === 'variations') row.variations = period.variations;
+                    return row;
                 });
-
-            // Roll up the BDM's overall numbers across all periods.
-            const overall = periodRows.reduce(
-                (acc, r) => {
-                    acc.numQuotes += r.numQuotes;
-                    acc.quoteValueTotal += r.quoteValueTotal;
-                    acc.numProjectsWon += r.numProjectsWon;
-                    acc.projectValue += r.projectValue;
-                    acc.variationValue += r.variationValue;
-                    acc.totalValue += r.totalValue;
-                    acc.numNewClients += r.numNewClients;
-                    return acc;
-                },
-                {
-                    numQuotes: 0,
-                    quoteValueTotal: 0,
-                    numProjectsWon: 0,
-                    projectValue: 0,
-                    variationValue: 0,
-                    totalValue: 0,
-                    numNewClients: 0
-                }
-            );
-
+            const overall = periodRows.reduce((acc, r) => {
+                acc.numQuotes += r.numQuotes;
+                acc.quoteValueTotal += r.quoteValueTotal;
+                acc.numProjectsWon += r.numProjectsWon;
+                acc.projectValue += r.projectValue;
+                acc.variationValue += r.variationValue;
+                acc.totalValue += r.totalValue;
+                acc.numNewClients += r.numNewClients;
+                return acc;
+            }, { numQuotes: 0, quoteValueTotal: 0, numProjectsWon: 0, projectValue: 0, variationValue: 0, totalValue: 0, numNewClients: 0 });
             return {
                 bdmUid: stats.bdmUid,
                 bdmName: stats.bdmName,
@@ -607,74 +461,95 @@ const handler = async (req, res) => {
                 periods: periodRows
             };
         });
-
-        // Sort BDMs by total project value desc.
         result.sort((a, b) => b.overall.projectValue - a.overall.projectValue);
 
-        // ---------- grand totals ----------
-        const grandTotals = result.reduce(
-            (acc, b) => {
-                acc.numQuotes += b.overall.numQuotes;
-                acc.quoteValueTotal += b.overall.quoteValueTotal;
-                acc.numProjectsWon += b.overall.numProjectsWon;
-                acc.projectValue += b.overall.projectValue;
-                acc.variationValue += b.overall.variationValue;
-                acc.totalValue += b.overall.totalValue;
-                acc.numNewClients += b.overall.numNewClients;
-                return acc;
-            },
-            {
-                numQuotes: 0,
-                quoteValueTotal: 0,
-                numProjectsWon: 0,
-                projectValue: 0,
-                variationValue: 0,
-                totalValue: 0,
-                numNewClients: 0
-            }
-        );
+        const grandTotals = result.reduce((acc, b) => {
+            acc.numQuotes += b.overall.numQuotes;
+            acc.quoteValueTotal += b.overall.quoteValueTotal;
+            acc.numProjectsWon += b.overall.numProjectsWon;
+            acc.projectValue += b.overall.projectValue;
+            acc.variationValue += b.overall.variationValue;
+            acc.totalValue += b.overall.totalValue;
+            acc.numNewClients += b.overall.numNewClients;
+            return acc;
+        }, { numQuotes: 0, quoteValueTotal: 0, numProjectsWon: 0, projectValue: 0, variationValue: 0, totalValue: 0, numNewClients: 0 });
 
-        // ---------- shape lifetime payload ----------
-        // Sorted by total value desc so the most-active BDMs surface first.
-        // Strip internal-only Set objects before serialization.
         const lifetimeBdms = Object.values(lifetimePerBdm)
             .map((b) => ({
-                bdmUid: b.bdmUid,
-                bdmName: b.bdmName,
-                numQuotes: b.numQuotes,
-                quoteValueTotal: b.quoteValueTotal,
-                numProjectsWon: b.numProjectsWon,
-                projectValue: b.projectValue,
-                variationValue: b.variationValue,
-                totalValue: b.totalValue,
+                bdmUid: b.bdmUid, bdmName: b.bdmName,
+                numQuotes: b.numQuotes, quoteValueTotal: b.quoteValueTotal,
+                numProjectsWon: b.numProjectsWon, projectValue: b.projectValue,
+                variationValue: b.variationValue, totalValue: b.totalValue,
                 numNewClients: b.numNewClients
             }))
             .sort((a, b) => b.totalValue - a.totalValue);
 
+        const flattenDetail = (key) => {
+            const out = [];
+            result.forEach((b) => {
+                (b.periods || []).forEach((p) => {
+                    (p[key] || []).forEach((rec) => {
+                        out.push(Object.assign({
+                            bdmUid: b.bdmUid, bdmName: b.bdmName, period: p.period
+                        }, rec));
+                    });
+                });
+            });
+            return out;
+        };
+
+        if (section === 'quotes') {
+            return res.status(200).json({
+                success: true,
+                data: {
+                    section: 'quotes', granularity,
+                    from: fromDate.toISOString(), to: toDate.toISOString(),
+                    quotes: flattenDetail('quotes'),
+                    meta: { quotesInRange, currencyMode: 'INR', truncated }
+                }
+            });
+        }
+        if (section === 'wins') {
+            return res.status(200).json({
+                success: true,
+                data: {
+                    section: 'wins', granularity,
+                    from: fromDate.toISOString(), to: toDate.toISOString(),
+                    wonProjects: flattenDetail('wonProjects'),
+                    meta: { winsInRange, currencyMode: 'INR', truncated }
+                }
+            });
+        }
+        if (section === 'variations') {
+            return res.status(200).json({
+                success: true,
+                data: {
+                    section: 'variations', granularity,
+                    from: fromDate.toISOString(), to: toDate.toISOString(),
+                    variations: flattenDetail('variations'),
+                    meta: { variationsInRange, currencyMode: 'INR', truncated }
+                }
+            });
+        }
+
         return res.status(200).json({
             success: true,
             data: {
-                granularity,
-                from: fromDate.toISOString(),
-                to: toDate.toISOString(),
+                section, granularity,
+                from: fromDate.toISOString(), to: toDate.toISOString(),
                 periodKeys: Array.from(allPeriodKeys).sort(),
                 bdms: result,
                 totals: grandTotals,
-                lifetime: {
-                    totals: lifetimeTotals,
-                    bdms: lifetimeBdms,
-                    currency: 'INR'
-                },
+                lifetime: { totals: lifetimeTotals, bdms: lifetimeBdms, currency: 'INR' },
                 meta: {
                     proposalsScanned,
                     projectsScanned: projects.length,
                     variationsScanned: variations.length,
-                    quotesInRange,
-                    winsInRange,
-                    variationsInRange,
+                    quotesInRange, winsInRange, variationsInRange,
                     bdmCount: result.length,
                     currencyMode: 'INR',
                     winsSource: 'projects collection',
+                    truncated,
                     fxRates: CURRENCY_TO_INR
                 }
             }
@@ -690,3 +565,7 @@ const handler = async (req, res) => {
 };
 
 module.exports = allowCors(handler);
+
+// Vercel function configuration. Default 10s ceiling is too tight; bump to 60s
+// with 1024MB memory so we never trip stream-idle on cold starts.
+module.exports.config = { maxDuration: 60, memory: 1024 };
