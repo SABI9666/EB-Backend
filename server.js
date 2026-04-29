@@ -109,8 +109,9 @@ app.get('/', (req, res) => {
             'POST /api/allocation-requests - COO request allocation/budget change',
             'GET  /api/allocation-requests - Get pending requests',
             'PUT  /api/allocation-requests - Director approve/reject',
-            'POST /api/screening - Create/manage candidate screenings',
             'GET  /api/bdm-analytics - BDM analytics report (COO/Director)',
+            '*    /api/bdm-entries - Manual quote/won entries (BDM/COO/Director)',
+            'POST /api/screening - Create/manage candidate screenings',
         ]
     });
 });
@@ -176,6 +177,12 @@ try {
     // ============================================
     console.log('  Loading bdm-analytics...');
     const bdmAnalyticsHandler = require('./api/bdm-analytics');
+
+    // ============================================
+    // NEW: Load bdm-entries handler (BDM/COO/Director manual quote uploads)
+    // ============================================
+    console.log('  Loading bdm-entries...');
+    const bdmEntriesHandler = require('./api/bdm-entries');
 
     console.log('  Loading email...');
     // --- FIX: Import the 'emailHandler' object from the refactored file ---
@@ -244,6 +251,11 @@ try {
     // NEW: Register bdm-analytics route (COO/Director portal)
     // ============================================
     app.use('/api/bdm-analytics', bdmAnalyticsHandler);
+
+    // ============================================
+    // NEW: Register bdm-entries route (manual quote / won uploads)
+    // ============================================
+    app.use('/api/bdm-entries', bdmEntriesHandler);
 
     app.use('/api/email', emailHandler);
 
@@ -332,6 +344,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('   *    /api/daily-expenses');
     console.log('   *    /api/gst-filing');
     console.log('   GET  /api/bdm-analytics');
+    console.log('   *    /api/bdm-entries');
     console.log('');
 });
 
