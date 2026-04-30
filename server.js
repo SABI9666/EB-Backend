@@ -111,6 +111,7 @@ app.get('/', (req, res) => {
             'PUT  /api/allocation-requests - Director approve/reject',
             'GET  /api/bdm-analytics - BDM analytics report (COO/Director)',
             '*    /api/bdm-entries - Manual quote/won entries (BDM/COO/Director)',
+            '*    /api/bdm-quote-sync - Manual quote save with INR conversion',
             'POST /api/screening - Create/manage candidate screenings',
         ]
     });
@@ -184,6 +185,13 @@ try {
     console.log('  Loading bdm-entries...');
     const bdmEntriesHandler = require('./api/bdm-entries');
 
+    // ============================================
+    // NEW: Load bdm-quote-sync handler (saves manual quote with locked-in
+    // INR conversion so it shows up unchanged in BDM Analytics)
+    // ============================================
+    console.log('  Loading bdm-quote-sync...');
+    const bdmQuoteSyncHandler = require('./api/bdm-quote-sync');
+
     console.log('  Loading email...');
     // --- FIX: Import the 'emailHandler' object from the refactored file ---
     const { emailHandler } = require('./api/email');
@@ -256,6 +264,11 @@ try {
     // NEW: Register bdm-entries route (manual quote / won uploads)
     // ============================================
     app.use('/api/bdm-entries', bdmEntriesHandler);
+
+    // ============================================
+    // NEW: Register bdm-quote-sync route (manual quote with INR conversion)
+    // ============================================
+    app.use('/api/bdm-quote-sync', bdmQuoteSyncHandler);
 
     app.use('/api/email', emailHandler);
 
@@ -345,6 +358,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('   *    /api/gst-filing');
     console.log('   GET  /api/bdm-analytics');
     console.log('   *    /api/bdm-entries');
+    console.log('   *    /api/bdm-quote-sync');
     console.log('');
 });
 
