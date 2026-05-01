@@ -140,6 +140,10 @@ const handler = async (req, res) => {
         };
 
         const bdmMap = {};
+        // Email -> canonical bdmUid lookup. Lets us re-attribute manual
+        // entries that were saved with an email instead of (or in addition
+        // to) a Firebase uid back to the right BDM record.
+        const bdmEmailToUid = {};
         bdmsSnap.forEach((doc) => {
             const u = doc.data();
             bdmMap[doc.id] = {
@@ -147,6 +151,8 @@ const handler = async (req, res) => {
                 bdmName: u.name || u.displayName || u.email || 'Unknown',
                 bdmEmail: u.email || ''
             };
+            const e = String(u.email || '').toLowerCase();
+            if (e) bdmEmailToUid[e] = doc.id;
         });
 
         const proposals = proposalsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -373,10 +379,22 @@ const handler = async (req, res) => {
         // the same per-period structures so cards / lifetime totals / Excel
         // download all reflect the manual data without further plumbing.
         for (const e of manualEntries) {
-            // bdmUid is the canonical owner, but legacy / older entries may
-            // only carry createdByUid. Fall back so those don't silently
-            // disappear from the report.
-            const bdmUid = e.bdmUid || e.createdByUid || '';
+            // bdmUid is the canonical owner. Fall back through every
+            // identity field we ever stored so an entry written with an
+            // older identifier still attributes to the right BDM record.
+            // Order: stored bdmUid (preferred) -> createdByUid -> stored
+            // email mapped via bdmEmailToUid -> createdByEmail mapped the
+            // same way -> the raw email itself as a last-resort key.
+            const storedBdmEmail = String(e.bdmEmail || '').toLowerCase();
+            const storedCreatedEmail = String(e.createdByEmail || '').toLowerCase();
+            const bdmUid =
+                e.bdmUid ||
+                e.createdByUid ||
+                bdmEmailToUid[storedBdmEmail] ||
+                bdmEmailToUid[storedCreatedEmail] ||
+                storedBdmEmail ||
+                storedCreatedEmail ||
+                '';
             if (!bdmUid) continue;
             const entryDate = toJsDate(e.date) || toJsDate(e.createdAt);
             if (!entryDate) continue;
