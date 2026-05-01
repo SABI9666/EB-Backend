@@ -107,14 +107,19 @@ const handler = async (req, res) => {
         // BDM files under self; COO / Director may file on behalf of a BDM.
         const bdmUidVal = role === 'bdm' ? userUid : s(b.bdmUid || userUid);
         const bdmNameVal = role === 'bdm' ? userName : s(b.bdmName || userName);
+        const bdmEmailVal = role === 'bdm' ? userEmail : s(b.bdmEmail || '');
 
         // Normalized record: currency='INR' and value=<converted>. The
         // existing bdm-analytics.js calls toInr again -- with currency='INR'
         // its rate is 1, so the rupee figure persists unchanged.
+        // Persist bdmEmail + createdByEmail alongside the uid fields so the
+        // entry can always be tied back to its owner across re-logins, even
+        // if the uid resolution shifts.
         const doc = {
             type: type,
             bdmUid: s(bdmUidVal),
             bdmName: s(bdmNameVal),
+            bdmEmail: s(bdmEmailVal).toLowerCase(),
             date: dateIso,
             value: valueInr,
             currency: 'INR',
@@ -129,6 +134,7 @@ const handler = async (req, res) => {
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             createdByUid: s(userUid),
             createdByName: s(userName),
+            createdByEmail: s(userEmail).toLowerCase(),
             sourceModule: 'bdm-quote-sync'
         };
         Object.keys(doc).forEach((k) => { if (doc[k] === undefined) doc[k] = ''; });
