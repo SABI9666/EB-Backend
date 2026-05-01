@@ -373,9 +373,12 @@ const handler = async (req, res) => {
         // the same per-period structures so cards / lifetime totals / Excel
         // download all reflect the manual data without further plumbing.
         for (const e of manualEntries) {
-            const bdmUid = e.bdmUid;
+            // bdmUid is the canonical owner, but legacy / older entries may
+            // only carry createdByUid. Fall back so those don't silently
+            // disappear from the report.
+            const bdmUid = e.bdmUid || e.createdByUid || '';
             if (!bdmUid) continue;
-            const entryDate = toJsDate(e.date);
+            const entryDate = toJsDate(e.date) || toJsDate(e.createdAt);
             if (!entryDate) continue;
 
             const rawValue = num(e.value);
