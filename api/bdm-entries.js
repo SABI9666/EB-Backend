@@ -47,15 +47,19 @@ const handler = async (req, res) => {
 
         if (req.method === 'GET') {
             const { from, to, bdmUid, type } = req.query;
+            // Read without an orderBy so entries that are missing the `date`
+            // field (legacy / partial writes) are still returned. Sort in
+            // memory below.
             let snap;
             try {
-                snap = await db.collection('bdm_entries').orderBy('date', 'desc').limit(2000).get();
-            } catch (e) {
-                console.warn('[bdm-entries] GET orderBy failed, falling back:', e.message);
                 snap = await db.collection('bdm_entries').limit(2000).get();
+            } catch (e) {
+                console.warn('[bdm-entries] GET read failed:', e.message);
+                snap = { docs: [], size: 0 };
             }
-            let entries = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            const totalBeforeFilter = entries.length;
+            const allDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const totalDocsInCollection = allDocs.length;
+            let entries = allDocs.slice();
 
             if (type) entries = entries.filter((e) => String(e.type || '').toLowerCase() === String(type).toLowerCase());
             if (bdmUid) entries = entries.filter((e) => e.bdmUid === bdmUid);
@@ -65,22 +69,37 @@ const handler = async (req, res) => {
             if (fromMs || toMs) {
                 entries = entries.filter((e) => {
                     const t = new Date(e.date).getTime();
+                    if (isNaN(t)) return false;
                     if (fromMs && t < fromMs) return false;
                     if (toMs && t > toMs) return false;
                     return true;
                 });
             }
-            entries.sort((a, b) => new Date(b.date) - new Date(a.date));
+            entries.sort((a, b) => {
+                const ta = new Date(a.date).getTime();
+                const tb = new Date(b.date).getTime();
+                if (isNaN(ta) && isNaN(tb)) return 0;
+                if (isNaN(ta)) return 1;
+                if (isNaN(tb)) return -1;
+                return tb - ta;
+            });
 
-            const debugBlock = req.query.debug
-                ? { totalBeforeFilter, role, userUid, userEmail, sample: entries.slice(0, 1) }
-                : undefined;
+            const meta = {
+                totalDocsInCollection,
+                totalAfterFilter: entries.length,
+                role,
+                userUid,
+                userEmail,
+                appliedFilter: { type: type || null, bdmUid: bdmUid || null, from: from || null, to: to || null }
+            };
+            const debugBlock = req.query.debug ? { ...meta, sample: entries.slice(0, 1) } : undefined;
 
-            console.log(`[bdm-entries] GET returned count=${entries.length} totalBeforeFilter=${totalBeforeFilter}`);
+            console.log(`[bdm-entries] GET total=${totalDocsInCollection} after-filter=${entries.length} type=${type || ''} bdmUid=${bdmUid || ''}`);
             return res.status(200).json({
                 success: true,
                 entries,
                 count: entries.length,
+                meta,
                 ...(debugBlock ? { debug: debugBlock } : {})
             });
         }
