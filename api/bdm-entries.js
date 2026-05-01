@@ -47,40 +47,79 @@ const handler = async (req, res) => {
 
         if (req.method === 'GET') {
             const { from, to, bdmUid, type } = req.query;
+            // Read without an orderBy so entries that are missing the `date`
+            // field (legacy / partial writes) are still returned. Sort in
+            // memory below.
             let snap;
             try {
-                snap = await db.collection('bdm_entries').orderBy('date', 'desc').limit(2000).get();
-            } catch (e) {
-                console.warn('[bdm-entries] GET orderBy failed, falling back:', e.message);
                 snap = await db.collection('bdm_entries').limit(2000).get();
+            } catch (e) {
+                console.warn('[bdm-entries] GET read failed:', e.message);
+                snap = { docs: [], size: 0 };
             }
-            let entries = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            const totalBeforeFilter = entries.length;
+            const allDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const totalDocsInCollection = allDocs.length;
+            let entries = allDocs.slice();
 
             if (type) entries = entries.filter((e) => String(e.type || '').toLowerCase() === String(type).toLowerCase());
             if (bdmUid) entries = entries.filter((e) => e.bdmUid === bdmUid);
+
+            // ?mine=1 — defensive "show only entries owned by the calling
+            // user". Matches across every identity field we have ever stored
+            // on a manual entry, so a row that was saved with one identifier
+            // (e.g. Firebase uid) is still found when the same person logs
+            // back in even if a different identifier resolved during this
+            // session. Without this, entries can appear "lost" after logout
+            // when an older row carries an inconsistent owner field.
+            if (String(req.query.mine || '').toLowerCase() === '1' || req.query.mine === 'true') {
+                const me = new Set(
+                    [userUid, userEmail, userEmail.toLowerCase()].filter(Boolean)
+                );
+                entries = entries.filter((e) => {
+                    const candidates = [
+                        e.bdmUid, e.bdmEmail,
+                        e.createdByUid, e.createdByEmail
+                    ].map((v) => (v == null ? '' : String(v)));
+                    return candidates.some((c) => c && (me.has(c) || me.has(c.toLowerCase())));
+                });
+            }
 
             const fromMs = from ? new Date(from).getTime() : null;
             const toMs = to ? new Date(to).getTime() + 86399999 : null;
             if (fromMs || toMs) {
                 entries = entries.filter((e) => {
                     const t = new Date(e.date).getTime();
+                    if (isNaN(t)) return false;
                     if (fromMs && t < fromMs) return false;
                     if (toMs && t > toMs) return false;
                     return true;
                 });
             }
-            entries.sort((a, b) => new Date(b.date) - new Date(a.date));
+            entries.sort((a, b) => {
+                const ta = new Date(a.date).getTime();
+                const tb = new Date(b.date).getTime();
+                if (isNaN(ta) && isNaN(tb)) return 0;
+                if (isNaN(ta)) return 1;
+                if (isNaN(tb)) return -1;
+                return tb - ta;
+            });
 
-            const debugBlock = req.query.debug
-                ? { totalBeforeFilter, role, userUid, userEmail, sample: entries.slice(0, 1) }
-                : undefined;
+            const meta = {
+                totalDocsInCollection,
+                totalAfterFilter: entries.length,
+                role,
+                userUid,
+                userEmail,
+                appliedFilter: { type: type || null, bdmUid: bdmUid || null, from: from || null, to: to || null }
+            };
+            const debugBlock = req.query.debug ? { ...meta, sample: entries.slice(0, 1) } : undefined;
 
-            console.log(`[bdm-entries] GET returned count=${entries.length} totalBeforeFilter=${totalBeforeFilter}`);
+            console.log(`[bdm-entries] GET total=${totalDocsInCollection} after-filter=${entries.length} type=${type || ''} bdmUid=${bdmUid || ''}`);
             return res.status(200).json({
                 success: true,
                 entries,
                 count: entries.length,
+                meta,
                 ...(debugBlock ? { debug: debugBlock } : {})
             });
         }
@@ -119,12 +158,21 @@ const handler = async (req, res) => {
             const bdmUidVal = (role === 'bdm') ? userUid : s(b.bdmUid || userUid);
             const bdmNameVal = (role === 'bdm') ? userName : s(b.bdmName || userName);
 
+            // For COO / Director filing on behalf of a BDM, the bdmEmail
+            // they pass through (if any) helps the report tie the entry
+            // back to the right BDM even if uid lookups drift later.
+            const bdmEmailVal = (role === 'bdm') ? userEmail : s(b.bdmEmail || '');
+
             // Build the doc with NO undefined fields — Firestore Admin SDK
             // throws on undefined, which used to silently fail the save.
+            // We persist every identity field we know about (bdmUid +
+            // bdmEmail, createdByUid + createdByEmail) so the entry can
+            // always be matched back to its owner across re-logins.
             const doc = {
                 type: type,
                 bdmUid: s(bdmUidVal),
                 bdmName: s(bdmNameVal),
+                bdmEmail: s(bdmEmailVal).toLowerCase(),
                 date: dateIso,
                 value: value,
                 currency: currency,
@@ -134,7 +182,8 @@ const handler = async (req, res) => {
                 notes: s(b.notes).trim(),
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 createdByUid: s(userUid),
-                createdByName: s(userName)
+                createdByName: s(userName),
+                createdByEmail: s(userEmail).toLowerCase()
             };
 
             // Sanity sweep: drop any accidentally-undefined keys so add() can't
