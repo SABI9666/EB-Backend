@@ -1,35 +1,28 @@
 // api/bdm-analytics.js
-// BDM analytics report (weekly / monthly / quarterly / yearly).
+// BDM analytics aggregator: per-BDM × per-period roll-up of quotes,
+// project wins and approved variations sourced from proposals,
+// projects, variations and bdm_entries collections.
 // Restricted to COO and Director.
 //
-// Sources (in this order, merged together):
-//   1. proposals.pricing.* — set by COO pricing portal
-//   2. projects collection — wins recorded by Director portal
-//   3. variations collection — approved variations
+// Sources:
+//   1. proposals collection — once a proposal has COO pricing it counts
+//      as a quote (regardless of follow-up status changes).
+//   2. projects collection — wins (with date attribution).
+//   3. variations collection — approved variations.
 //   4. bdm_entries collection — manual quote/won uploads from BDMs
-//      (the COO portal isn't the only source of truth; BDM/COO/Director can
-//      file quotes directly via /api/bdm-entries — those flow in here too)
+//
+// Lifetime totals are computed independently of the from/to filter so the
+// COO/Director always sees a real number even when the selected window is
+// empty.
 
-const admin = require('./_firebase-admin');
-const { verifyToken } = require('../middleware/auth');
 const util = require('util');
+const { db, verifyToken } = require('./_firebase-admin');
 
-const db = admin.firestore();
-
-const allowCors = (fn) => async (req, res) => {
-    res.setHeader('Access-Control-Allow-Credentials', true);
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-    res.setHeader(
-        'Access-Control-Allow-Headers',
-        'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization'
-    );
-    if (req.method === 'OPTIONS') { res.status(200).end(); return; }
-    return await fn(req, res);
-};
+// ---------- helpers ----------
 
 function toJsDate(ts) {
     if (!ts) return null;
+    if (ts instanceof Date) return isNaN(ts.getTime()) ? null : ts;
     if (ts.toDate) return ts.toDate();
     if (ts._seconds != null) return new Date(ts._seconds * 1000);
     if (ts.seconds != null) return new Date(ts.seconds * 1000);
@@ -306,111 +299,85 @@ const handler = async (req, res) => {
             const period = ensurePeriod(stats, key);
             const projClient = proj.clientCompany || proj.clientName || '';
             period.wonProjects.push({
-                projectId: proj.id, source: 'projects_collection',
-                proposalId: proj.proposalId || '', date: wonDate.toISOString(),
+                projectId: proj.id, source: 'project',
+                proposalId: proj.proposalId || (proj.proposal && proj.proposal.id) || '',
+                date: wonDate.toISOString(),
                 projectName: proj.projectName || proj.name || '',
-                clientCompany: projClient, currency: 'INR',
-                value: toInr(rawValue, currency),
-                originalCurrency: currency, originalValue: rawValue
-            });
-            if (projClient && stats.firstClientSeen[projClient] == null) {
-                stats.firstClientSeen[projClient] = wonDate.getTime();
-            }
-        }
-
-        for (const stats of Object.values(bdmStats)) {
-            for (const period of Object.values(stats.periods)) {
-                period.quotes.forEach((q) => {
-                    if (!q.clientCompany) return;
-                    const firstMs = stats.firstClientSeen[q.clientCompany];
-                    if (firstMs && new Date(q.date).getTime() === firstMs) {
-                        period.newClients.add(q.clientCompany);
-                    }
-                });
-            }
-        }
-
-        // ---------- variations ----------
-        const projectIdToBdm = {};
-        for (const p of proposals) {
-            if (p.projectId && p.createdByUid) {
-                projectIdToBdm[p.projectId] = { bdmUid: p.createdByUid, bdmName: p.createdByName || '' };
-            }
-        }
-        function resolveOwner(parentProjectId) {
-            if (!parentProjectId) return null;
-            if (projectIdToBdm[parentProjectId]) return projectIdToBdm[parentProjectId];
-            const proj = projectById[parentProjectId];
-            if (proj && proj.bdmUid) {
-                projectIdToBdm[parentProjectId] = { bdmUid: proj.bdmUid, bdmName: proj.bdmName || '' };
-                return projectIdToBdm[parentProjectId];
-            }
-            return null;
-        }
-
-        for (const v of variations) {
-            if (v.status !== 'approved') continue;
-            const approvedAt = toJsDate(v.approvedAt) || toJsDate(v.updatedAt);
-            const rawValue = pickAmount(v, ['value', 'approvedValue', 'amount', 'quoteValue', 'totalValue', 'variationValue']);
-            const currency = v.currency || '';
-            const owner = resolveOwner(v.parentProjectId);
-            if (owner) bumpLifetime(owner.bdmUid, owner.bdmName, 'variation', toInr(rawValue, currency));
-            if (!approvedAt || approvedAt < fromDate || approvedAt > toDate) continue;
-            variationsInRange += 1;
-            if (!owner) continue;
-            const stats = ensure(owner.bdmUid, owner.bdmName);
-            const key = periodKey(approvedAt, granularity);
-            if (!key) continue;
-            const period = ensurePeriod(stats, key);
-            period.variations.push({
-                variationId: v.id, source: 'variations_collection',
-                date: approvedAt.toISOString(),
-                variationCode: v.variationCode || '',
-                projectName: v.parentProjectName || '',
-                clientCompany: v.clientCompany || '',
-                estimatedHours: num(v.estimatedHours),
+                clientCompany: projClient,
                 currency: 'INR', value: toInr(rawValue, currency),
                 originalCurrency: currency, originalValue: rawValue
             });
+            if (projClient) {
+                period.clients.add(projClient);
+                const lb = lifetimePerBdm[bdmUid];
+                if (lb && !lb.clients.has(projClient)) {
+                    lb.clients.add(projClient); lb.numNewClients += 1; lifetimeTotals.numNewClients += 1;
+                }
+                const ms = wonDate.getTime();
+                if (stats.firstClientSeen[projClient] == null || ms < stats.firstClientSeen[projClient]) {
+                    stats.firstClientSeen[projClient] = ms;
+                }
+            }
         }
 
-        // ---------- merge bdm_entries (manual uploads) ----------
-        // Each manual entry adds a quote/win/variation row directly. We use
-        // the same per-period structures so cards / lifetime totals / Excel
-        // download all reflect the manual data without further plumbing.
-        for (const e of manualEntries) {
-            // bdmUid is the canonical owner. Fall back through every
-            // identity field we ever stored so an entry written with an
-            // older identifier still attributes to the right BDM record.
-            // Order: stored bdmUid (preferred) -> createdByUid -> stored
-            // email mapped via bdmEmailToUid -> createdByEmail mapped the
-            // same way -> the raw email itself as a last-resort key.
-            const storedBdmEmail = String(e.bdmEmail || '').toLowerCase();
-            const storedCreatedEmail = String(e.createdByEmail || '').toLowerCase();
-            const bdmUid =
-                e.bdmUid ||
-                e.createdByUid ||
-                bdmEmailToUid[storedBdmEmail] ||
-                bdmEmailToUid[storedCreatedEmail] ||
-                storedBdmEmail ||
-                storedCreatedEmail ||
-                '';
+        // ---------- variations → approved variations ----------
+        for (const v of variations) {
+            const isApproved = (v.status || '').toLowerCase() === 'approved' || v.approved === true;
+            if (!isApproved) continue;
+            const proj = v.projectId ? projectById[v.projectId] : null;
+            const bdmUid = v.bdmUid || (proj && proj.bdmUid) || (proj && proj.proposal && proj.proposal.createdByUid);
             if (!bdmUid) continue;
-            const entryDate = toJsDate(e.date) || toJsDate(e.createdAt);
-            if (!entryDate) continue;
+            const approvedAt = toJsDate(v.approvedAt) || toJsDate(v.updatedAt) || toJsDate(v.createdAt);
+            const rawValue = pickAmount(v, ['variationValue', 'amount', 'value', 'quoteValue']);
+            const vcurrency = v.currency || (proj && proj.currency) || '';
+            const valueInr = toInr(rawValue, vcurrency);
+            bumpLifetime(bdmUid, (proj && proj.bdmName) || '', 'variation', valueInr);
+            if (!approvedAt || approvedAt < fromDate || approvedAt > toDate) continue;
+            variationsInRange += 1;
+            const stats = ensure(bdmUid, (proj && proj.bdmName) || '');
+            const key = periodKey(approvedAt, granularity);
+            if (!key) continue;
+            const period = ensurePeriod(stats, key);
+            const vClient = v.clientCompany || (proj && (proj.clientCompany || proj.clientName)) || '';
+            period.variations.push({
+                variationId: v.id, source: 'variation',
+                projectId: v.projectId || '', date: approvedAt.toISOString(),
+                variationCode: v.variationCode || v.code || '',
+                projectName: v.projectName || (proj && (proj.projectName || proj.name)) || '',
+                clientCompany: vClient,
+                estimatedHours: num(v.estimatedHours),
+                currency: 'INR', value: valueInr,
+                originalCurrency: vcurrency, originalValue: rawValue
+            });
+        }
 
+        // ---------- bdm_entries → manual quote / won / variation uploads ----------
+        for (const e of manualEntries) {
+            const entryDate = toJsDate(e.date) || toJsDate(e.createdAt);
+            const rawBdmUid = e.bdmUid || e.uid || '';
+            const rawEmail = String(e.bdmEmail || e.email || '').toLowerCase();
+            // Resolve to a known BDM record. If the entry was saved with
+            // only an email, look up the canonical uid so a previously
+            // older identifier still attributes to the right BDM record.
+            let bdmUid = rawBdmUid;
+            if (!bdmUid && rawEmail) bdmUid = bdmEmailToUid[rawEmail] || '';
+            if (bdmUid && !bdmMap[bdmUid] && rawEmail) {
+                const fallback = bdmEmailToUid[rawEmail];
+                if (fallback) bdmUid = fallback;
+            }
+            if (!bdmUid) continue;
+            const bdmName = e.bdmName || (bdmMap[bdmUid] && bdmMap[bdmUid].bdmName) || '';
+            const stats = ensure(bdmUid, bdmName);
+            const client = (e.clientCompany || '').trim();
             const rawValue = num(e.value);
             const currency = e.currency || 'INR';
             const valueInr = toInr(rawValue, currency);
-            const stats = ensure(bdmUid, e.bdmName);
 
             // Lifetime tally — ignores from/to filter, like the other sources.
-            if (e.type === 'quote') bumpLifetime(bdmUid, e.bdmName, 'quote', valueInr);
-            else if (e.type === 'won') bumpLifetime(bdmUid, e.bdmName, 'win', valueInr);
-            else if (e.type === 'variation') bumpLifetime(bdmUid, e.bdmName, 'variation', valueInr);
-
-            const client = (e.clientCompany || '').trim();
-            if (client) {
+            if (e.type === 'quote') bumpLifetime(bdmUid, bdmName, 'quote', valueInr);
+            else if (e.type === 'won') bumpLifetime(bdmUid, bdmName, 'win', valueInr);
+            else if (e.type === 'variation') bumpLifetime(bdmUid, bdmName, 'variation', valueInr);
+            if (client && (e.type === 'quote' || e.type === 'won')) {
                 const lb = lifetimePerBdm[bdmUid];
                 if (lb && !lb.clients.has(client)) {
                     lb.clients.add(client); lb.numNewClients += 1; lifetimeTotals.numNewClients += 1;
@@ -418,22 +385,20 @@ const handler = async (req, res) => {
             }
 
             // In-window assignment to a period bucket.
-            if (entryDate < fromDate || entryDate > toDate) continue;
+            if (!entryDate || entryDate < fromDate || entryDate > toDate) continue;
             const key = periodKey(entryDate, granularity);
             if (!key) continue;
             const period = ensurePeriod(stats, key);
-
             if (e.type === 'quote') {
                 manualQuotesInRange += 1;
                 period.quotes.push({
                     proposalId: e.id, source: 'manual_entry',
                     date: entryDate.toISOString(),
-                    pricedAt: null, pricedByName: e.createdByName || '',
                     projectName: e.projectName || '', clientCompany: client,
                     projectNumber: e.projectNumber || '',
                     currency: 'INR', value: valueInr,
                     originalCurrency: currency, originalValue: rawValue,
-                    status: 'manual'
+                    status: e.status || 'manual'
                 });
                 if (client) period.clients.add(client);
                 const ms = entryDate.getTime();
@@ -520,45 +485,66 @@ const handler = async (req, res) => {
             const out = [];
             result.forEach((b) => {
                 (b.periods || []).forEach((p) => {
-                    (p[key] || []).forEach((rec) => {
-                        out.push(Object.assign({ bdmUid: b.bdmUid, bdmName: b.bdmName, period: p.period }, rec));
+                    (p[key] || []).forEach((row) => {
+                        out.push({
+                            bdmUid: b.bdmUid, bdmName: b.bdmName,
+                            period: p.period, ...row
+                        });
                     });
                 });
             });
             return out;
         };
 
+        const PAGE_SIZE = Math.max(50, Math.min(parseInt(req.query.pageSize, 10) || 200, 1000));
+        const PAGE = Math.max(1, parseInt(req.query.page, 10) || 1);
+
         if (section === 'quotes') {
+            const all = flattenDetail('quotes')
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+            const start = (PAGE - 1) * PAGE_SIZE;
+            const slice = all.slice(start, start + PAGE_SIZE);
             return res.status(200).json({
                 success: true,
                 data: {
                     section: 'quotes', granularity,
                     from: fromDate.toISOString(), to: toDate.toISOString(),
-                    quotes: flattenDetail('quotes'),
-                    meta: { quotesInRange, manualQuotesInRange, currencyMode: 'INR', truncated }
-                }
+                    totalCount: all.length, page: PAGE, pageSize: PAGE_SIZE,
+                    items: slice
+                },
+                truncated
             });
         }
         if (section === 'wins') {
+            const all = flattenDetail('wonProjects')
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+            const start = (PAGE - 1) * PAGE_SIZE;
+            const slice = all.slice(start, start + PAGE_SIZE);
             return res.status(200).json({
                 success: true,
                 data: {
                     section: 'wins', granularity,
                     from: fromDate.toISOString(), to: toDate.toISOString(),
-                    wonProjects: flattenDetail('wonProjects'),
-                    meta: { winsInRange, manualWinsInRange, currencyMode: 'INR', truncated }
-                }
+                    totalCount: all.length, page: PAGE, pageSize: PAGE_SIZE,
+                    items: slice
+                },
+                truncated
             });
         }
         if (section === 'variations') {
+            const all = flattenDetail('variations')
+                .sort((a, b) => new Date(b.date) - new Date(a.date));
+            const start = (PAGE - 1) * PAGE_SIZE;
+            const slice = all.slice(start, start + PAGE_SIZE);
             return res.status(200).json({
                 success: true,
                 data: {
                     section: 'variations', granularity,
                     from: fromDate.toISOString(), to: toDate.toISOString(),
-                    variations: flattenDetail('variations'),
-                    meta: { variationsInRange, manualVariationsInRange, currencyMode: 'INR', truncated }
-                }
+                    totalCount: all.length, page: PAGE, pageSize: PAGE_SIZE,
+                    items: slice
+                },
+                truncated
             });
         }
 
@@ -568,31 +554,21 @@ const handler = async (req, res) => {
                 section, granularity,
                 from: fromDate.toISOString(), to: toDate.toISOString(),
                 periodKeys: Array.from(allPeriodKeys).sort(),
-                bdms: result, totals: grandTotals,
-                lifetime: { totals: lifetimeTotals, bdms: lifetimeBdms, currency: 'INR' },
+                totals: grandTotals,
+                bdms: result,
+                lifetime: { totals: lifetimeTotals, bdms: lifetimeBdms },
                 meta: {
-                    proposalsScanned,
-                    projectsScanned: projects.length,
-                    variationsScanned: variations.length,
-                    manualEntriesScanned: manualEntries.length,
-                    quotesInRange, winsInRange, variationsInRange,
-                    manualQuotesInRange, manualWinsInRange, manualVariationsInRange,
-                    bdmCount: result.length, currencyMode: 'INR',
-                    sources: ['proposals', 'projects', 'variations', 'bdm_entries'],
-                    winsSource: 'projects collection + bdm_entries',
-                    truncated, fxRates: CURRENCY_TO_INR
+                    proposalsScanned, quotesInRange, winsInRange, variationsInRange,
+                    manualQuotesInRange, manualWinsInRange, manualVariationsInRange
                 }
-            }
+            },
+            truncated
         });
-    } catch (error) {
-        console.error('BDM analytics API error:', error);
-        return res.status(500).json({
-            success: false,
-            error: 'Internal Server Error',
-            message: error.message
-        });
+    } catch (err) {
+        console.error('[bdm-analytics] error:', err);
+        return res.status(500).json({ success: false, error: err.message || 'Internal error' });
     }
 };
 
-module.exports = allowCors(handler);
-module.exports.config = { maxDuration: 60, memory: 1024 };
+module.exports = handler;
+module.exports.handler = handler;
