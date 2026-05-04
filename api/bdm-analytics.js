@@ -292,14 +292,20 @@ const handler = async (req, res) => {
         }
 
         // ---------- projects → wins ----------
+        // Only count a project as won when it has an explicit wonDate.
+        // Without this, every in-progress project (which always has a
+        // createdAt / updatedAt) would be bucketed as a "win" in the
+        // week / month it was created — inflating the per-period
+        // numProjectsWon / projectValue numbers in the charts.
         for (const proj of projects) {
             const bdmUid = proj.bdmUid || (proj.proposal && proj.proposal.createdByUid);
             if (!bdmUid) continue;
-            const wonDate = toJsDate(proj.wonDate) || toJsDate(proj.createdAt) || toJsDate(proj.updatedAt);
+            const wonDate = toJsDate(proj.wonDate);
+            if (!wonDate) continue;
             const rawValue = num(proj.quoteValue) || num(proj.projectValue) || num(proj.value) || num(proj.pricing && proj.pricing.quoteValue);
             const currency = proj.currency || (proj.pricing && proj.pricing.currency) || '';
             bumpLifetime(bdmUid, proj.bdmName || '', 'win', toInr(rawValue, currency));
-            if (!wonDate || wonDate < fromDate || wonDate > toDate) continue;
+            if (wonDate < fromDate || wonDate > toDate) continue;
             winsInRange += 1;
             const stats = ensure(bdmUid, proj.bdmName || '');
             const key = periodKey(wonDate, granularity);
