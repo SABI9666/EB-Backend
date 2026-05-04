@@ -64,14 +64,18 @@ const handler = async (req, res) => {
             if (type) entries = entries.filter((e) => String(e.type || '').toLowerCase() === String(type).toLowerCase());
             if (bdmUid) entries = entries.filter((e) => e.bdmUid === bdmUid);
 
-            // ?mine=1 — defensive "show only entries owned by the calling
-            // user". Matches across every identity field we have ever stored
-            // on a manual entry, so a row that was saved with one identifier
-            // (e.g. Firebase uid) is still found when the same person logs
-            // back in even if a different identifier resolved during this
-            // session. Without this, entries can appear "lost" after logout
-            // when an older row carries an inconsistent owner field.
-            if (String(req.query.mine || '').toLowerCase() === '1' || req.query.mine === 'true') {
+            // Role-based scoping. A BDM can only see entries they own — the
+            // Recent Entries panel on the upload form is per-BDM by policy.
+            // COO and Director see the whole pipeline so they can manage
+            // the team's quotes and wins. The optional ?mine=1 query string
+            // lets COO/Director narrow to their own filings (e.g. when they
+            // want to see what they personally entered) without us having
+            // to special-case anything client-side.
+            const isBdm = role === 'bdm';
+            const wantsMine = isBdm
+                || String(req.query.mine || '').toLowerCase() === '1'
+                || req.query.mine === 'true';
+            if (wantsMine) {
                 const me = new Set(
                     [userUid, userEmail, userEmail.toLowerCase()].filter(Boolean)
                 );
@@ -110,11 +114,23 @@ const handler = async (req, res) => {
                 role,
                 userUid,
                 userEmail,
-                appliedFilter: { type: type || null, bdmUid: bdmUid || null, from: from || null, to: to || null }
+                // Scope = 'mine' means the backend has already restricted
+                // the result to entries owned by the calling user (always
+                // true for BDMs, opt-in via ?mine=1 for COO/Director).
+                // 'all' means the caller is seeing every entry in the
+                // collection (modulo type/date filters).
+                scope: wantsMine ? 'mine' : 'all',
+                appliedFilter: {
+                    type: type || null,
+                    bdmUid: bdmUid || null,
+                    mine: wantsMine ? '1' : null,
+                    from: from || null,
+                    to: to || null
+                }
             };
             const debugBlock = req.query.debug ? { ...meta, sample: entries.slice(0, 1) } : undefined;
 
-            console.log(`[bdm-entries] GET total=${totalDocsInCollection} after-filter=${entries.length} type=${type || ''} bdmUid=${bdmUid || ''}`);
+            console.log(`[bdm-entries] GET total=${totalDocsInCollection} after-filter=${entries.length} type=${type || ''} bdmUid=${bdmUid || ''} scope=${meta.scope}`);
             return res.status(200).json({
                 success: true,
                 entries,
