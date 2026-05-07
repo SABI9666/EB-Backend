@@ -367,8 +367,8 @@ const handler = async (req, res) => {
                     break;
 
                 case 'add_pricing':
-                    if (req.user.role !== 'coo') {
-                        return res.status(403).json({ success: false, error: 'Only COO can add pricing' });
+                    if (!['estimator', 'coo', 'director'].includes(req.user.role)) {
+                        return res.status(403).json({ success: false, error: 'Only Estimator, COO or Director can add pricing' });
                     }
                     if (!data || !data.projectNumber || !data.quoteValue) {
                         return res.status(400).json({ success: false, error: 'Missing pricing data' });
@@ -384,32 +384,45 @@ const handler = async (req, res) => {
                             costBreakdown: data.costBreakdown || {},
                             pricedBy: req.user.email,
                             pricedByName: req.user.name,
+                            pricedByRole: req.user.role,
                             pricedAt: admin.firestore.FieldValue.serverTimestamp()
                         },
                         status: 'pricing_complete'
                     };
                     activityDetail = `Pricing added: ${data.currency} ${data.quoteValue} (Project #: ${data.projectNumber})`;
-                    
+
+                    // Notify BOTH COO and Director — either one can approve
                     try {
-                        const directorSnapshot = await db.collection('users').where('role', '==', 'director').limit(1).get();
-                        if (!directorSnapshot.empty) {
-                            const directorEmail = directorSnapshot.docs[0].data().email;
+                        const approverSnapshot = await db.collection('users').where('role', 'in', ['coo', 'director']).get();
+                        const approverEmails = approverSnapshot.docs.map(d => d.data().email).filter(Boolean);
+                        approverEmails.forEach(approverEmail => {
                             sendEmailNotification('pricing.complete', {
                                 projectName: proposal.projectName,
                                 quoteValue: `${data.currency} ${data.quoteValue}`,
                                 projectNumber: data.projectNumber,
                                 pricedBy: req.user.name,
                                 date: new Date().toLocaleDateString(),
-                                directorEmail: directorEmail
+                                directorEmail: approverEmail,
+                                cooEmail: approverEmail
                             }).catch(e => console.error('Pricing email failed:', e.message));
-                        }
+                        });
                     } catch (e) { console.error('Error preparing pricing email:', e.message); }
-                    
+
+                    // In-app notifications to both COO and Director
+                    await db.collection('notifications').add({
+                        type: 'pricing_complete',
+                        recipientRole: 'coo',
+                        proposalId: id,
+                        message: `Pricing completed for "${proposal.projectName}" by ${req.user.name} — awaiting approval`,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                        isRead: false,
+                        priority: 'high'
+                    });
                     await db.collection('notifications').add({
                         type: 'pricing_complete',
                         recipientRole: 'director',
                         proposalId: id,
-                        message: `Pricing completed for "${proposal.projectName}" by ${req.user.name}`,
+                        message: `Pricing completed for "${proposal.projectName}" by ${req.user.name} — awaiting approval`,
                         createdAt: admin.firestore.FieldValue.serverTimestamp(),
                         isRead: false,
                         priority: 'high'
@@ -417,9 +430,9 @@ const handler = async (req, res) => {
                     break;
 
                 case 'update_pricing':
-                    // NEW ACTION: Allow COO/Director to edit existing pricing
-                    if (!['coo', 'director'].includes(req.user.role)) {
-                        return res.status(403).json({ success: false, error: 'Only COO or Director can update pricing' });
+                    // Allow Estimator (who entered the pricing), COO or Director to edit existing pricing
+                    if (!['estimator', 'coo', 'director'].includes(req.user.role)) {
+                        return res.status(403).json({ success: false, error: 'Only Estimator, COO or Director can update pricing' });
                     }
                     
                     if (!data || !data.projectNumber || !data.quoteValue) {
@@ -660,75 +673,94 @@ const handler = async (req, res) => {
                     break;
 
                 case 'approve_proposal':
-                    if (req.user.role !== 'director') {
-                        return res.status(403).json({ success: false, error: 'Only Director can approve proposals' });
+                    // Either COO or Director can approve — single approval is enough
+                    if (!['coo', 'director'].includes(req.user.role)) {
+                        return res.status(403).json({ success: false, error: 'Only COO or Director can approve proposals' });
                     }
-                    updates = {
-                        status: 'approved',
-                        directorApproval: {
+                    if (proposal.status === 'approved') {
+                        return res.status(400).json({ success: false, error: 'Proposal is already approved' });
+                    }
+                    {
+                        const approverRoleLabel = req.user.role === 'coo' ? 'COO' : 'Director';
+                        const approvalRecord = {
                             approved: true,
                             approvedBy: req.user.name,
                             approvedByUid: req.user.uid,
+                            approvedByRole: req.user.role,
                             approvedAt: admin.firestore.FieldValue.serverTimestamp(),
-                            comments: data.comments || ''
-                        }
-                    };
-                    activityDetail = `Proposal approved by Director ${req.user.name}`;
-                    
-                    // Email trigger
-                    try {
-                        const bdmUserDoc = await db.collection('users').doc(proposal.createdByUid).get();
-                        if (bdmUserDoc.exists) {
-                            const bdmEmail = bdmUserDoc.data().email;
-                            sendEmailNotification('project.approved_by_director', {
-                                projectName: proposal.projectName,
-                                approvedBy: req.user.name,
-                                date: new Date().toLocaleDateString(),
-                                estimatedValue: `${proposal.pricing?.currency || ''} ${proposal.pricing?.quoteValue || 'N/A'}`,
-                                createdByEmail: bdmEmail
-                            }).catch(e => console.error('Approval email failed:', e.message));
-                        }
-                    } catch (e) { console.error('Error preparing approval email:', e.message); }
-                    
-                    // In-app notifications
-                    await db.collection('notifications').add({
-                        type: 'proposal_approved',
-                        recipientUid: proposal.createdByUid,
-                        recipientRole: 'bdm',
-                        proposalId: id,
-                        message: `Your proposal "${proposal.projectName}" has been approved by Director.`,
-                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                        isRead: false,
-                        priority: 'high'
-                    });
+                            comments: data?.comments || ''
+                        };
+                        updates = {
+                            status: 'approved',
+                            approval: approvalRecord,
+                            // Keep directorApproval for backward compatibility with existing frontend code
+                            directorApproval: approvalRecord
+                        };
+                        activityDetail = `Proposal approved by ${approverRoleLabel} ${req.user.name}`;
+
+                        // Email trigger to BDM
+                        try {
+                            const bdmUserDoc = await db.collection('users').doc(proposal.createdByUid).get();
+                            if (bdmUserDoc.exists) {
+                                const bdmEmail = bdmUserDoc.data().email;
+                                sendEmailNotification('project.approved_by_director', {
+                                    projectName: proposal.projectName,
+                                    approvedBy: req.user.name,
+                                    approvedByRole: approverRoleLabel,
+                                    date: new Date().toLocaleDateString(),
+                                    estimatedValue: `${proposal.pricing?.currency || ''} ${proposal.pricing?.quoteValue || 'N/A'}`,
+                                    createdByEmail: bdmEmail
+                                }).catch(e => console.error('Approval email failed:', e.message));
+                            }
+                        } catch (e) { console.error('Error preparing approval email:', e.message); }
+
+                        // In-app notification to BDM — they can now do won/lost entry & quote submission
+                        await db.collection('notifications').add({
+                            type: 'proposal_approved',
+                            recipientUid: proposal.createdByUid,
+                            recipientRole: 'bdm',
+                            proposalId: id,
+                            message: `Your proposal "${proposal.projectName}" has been approved by ${approverRoleLabel} ${req.user.name}. You can now submit the quote and record won/lost.`,
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false,
+                            priority: 'high'
+                        });
+                    }
                     break;
 
                 case 'reject_proposal':
-                    if (req.user.role !== 'director') {
-                        return res.status(403).json({ success: false, error: 'Only Director can reject proposals' });
+                    // Either COO or Director can reject
+                    if (!['coo', 'director'].includes(req.user.role)) {
+                        return res.status(403).json({ success: false, error: 'Only COO or Director can reject proposals' });
                     }
-                    updates = {
-                        status: 'rejected',
-                        directorApproval: {
+                    {
+                        const rejecterRoleLabel = req.user.role === 'coo' ? 'COO' : 'Director';
+                        const rejectionRecord = {
                             approved: false,
                             rejectedBy: req.user.name,
                             rejectedByUid: req.user.uid,
+                            rejectedByRole: req.user.role,
                             rejectedAt: admin.firestore.FieldValue.serverTimestamp(),
                             reason: data.reason,
                             comments: data.comments || ''
-                        }
-                    };
-                    activityDetail = `Proposal rejected by Director ${req.user.name}: ${data.reason}`;
-                    await db.collection('notifications').add({
-                        type: 'proposal_rejected',
-                        recipientUid: proposal.createdByUid,
-                        recipientRole: 'bdm',
-                        proposalId: id,
-                        message: `Your proposal "${proposal.projectName}" was rejected by Director. Reason: ${data.reason}`,
-                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                        isRead: false,
-                        priority: 'high'
-                    });
+                        };
+                        updates = {
+                            status: 'rejected',
+                            approval: rejectionRecord,
+                            directorApproval: rejectionRecord
+                        };
+                        activityDetail = `Proposal rejected by ${rejecterRoleLabel} ${req.user.name}: ${data.reason}`;
+                        await db.collection('notifications').add({
+                            type: 'proposal_rejected',
+                            recipientUid: proposal.createdByUid,
+                            recipientRole: 'bdm',
+                            proposalId: id,
+                            message: `Your proposal "${proposal.projectName}" was rejected by ${rejecterRoleLabel}. Reason: ${data.reason}`,
+                            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                            isRead: false,
+                            priority: 'high'
+                        });
+                    }
                     break;
 
                 case 'update_allocation_status':
