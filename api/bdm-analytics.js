@@ -2,13 +2,17 @@
 // BDM analytics report (weekly / monthly / quarterly / yearly).
 // Restricted to COO and Director.
 //
-// Sources (in this order, merged together):
-//   1. proposals.pricing.* — set by COO pricing portal
-//   2. projects collection — wins recorded by Director portal
-//   3. variations collection — approved variations
-//   4. bdm_entries collection — manual quote/won uploads from BDMs
-//      (the COO portal isn't the only source of truth; BDM/COO/Director can
-//      file quotes directly via /api/bdm-entries — those flow in here too)
+// Per-period rows (driving the Period Summary table and Weekly/Monthly/
+// Yearly charts) come from:
+//   1. projects collection — wins (must have wonDate)
+//   2. variations collection — approved variations
+//   3. bdm_entries collection — manual quote/won/variation uploads from BDMs
+//
+// proposals.pricing.* (set by the COO pricing portal) is still used for
+// the lifetime totals banner so historical pricing activity is visible,
+// but it is NOT counted in per-period quote buckets — the Live Period
+// Summary panel and the Weekly chart need to agree on what a "quote"
+// means, and the Live panel only counts manual bdm_entries.
 
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
@@ -263,32 +267,11 @@ const handler = async (req, res) => {
                     }
                 }
             }
-            if (hasPricing && quoteDate && quoteDate >= fromDate && quoteDate <= toDate) {
-                quotesInRange += 1;
-                const rawValue = num(p.pricing && p.pricing.quoteValue);
-                const currency = (p.pricing && p.pricing.currency) || '';
-                const valueInr = toInr(rawValue, currency);
-                const key = periodKey(quoteDate, granularity);
-                if (key) {
-                    const period = ensurePeriod(stats, key);
-                    period.quotes.push({
-                        proposalId: p.id, source: 'coo_portal',
-                        date: quoteDate.toISOString(),
-                        pricedAt: pricedAt ? pricedAt.toISOString() : null,
-                        pricedByName: (p.pricing && p.pricing.pricedByName) || '',
-                        projectName: p.projectName || '', clientCompany: client,
-                        projectNumber: (p.pricing && p.pricing.projectNumber) || '',
-                        currency: 'INR', value: valueInr,
-                        originalCurrency: currency, originalValue: rawValue,
-                        status: p.status || ''
-                    });
-                    if (client) period.clients.add(client);
-                    const ms = quoteDate.getTime();
-                    if (client && (stats.firstClientSeen[client] == null || ms < stats.firstClientSeen[client])) {
-                        stats.firstClientSeen[client] = ms;
-                    }
-                }
-            }
+            // Per-period quote rows come exclusively from bdm_entries
+            // (manual uploads). COO-portal-priced proposals still feed the
+            // lifetime totals above, but adding them here as well caused
+            // the Weekly chart's "Quote Value" bars to disagree with the
+            // Live Period Summary table, which only counts manual quotes.
         }
 
         // ---------- projects → wins ----------
