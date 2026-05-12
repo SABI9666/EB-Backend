@@ -246,7 +246,7 @@ router.put('/:id', verifyToken, async (req, res) => {
 // DELETE /api/petty-cash/:id
 router.delete('/:id', verifyToken, async (req, res) => {
     try {
-        if (!['accounts', 'director'].includes(req.user.role)) {
+        if (!['accounts', 'coo', 'director', 'it', 'hr'].includes(req.user.role)) {
             return res.status(403).json({ success: false, error: 'Permission denied' });
         }
 
