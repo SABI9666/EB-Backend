@@ -173,6 +173,9 @@ try {
     console.log('  Loading variations...');
     const variationsHandler = require('./api/variations');
 
+    console.log('  Loading account-variations...');
+    const accountVariationsHandler = require('./api/account-variations');
+
     // ============================================
     // NEW: Load bdm-analytics handler (COO/Director portal)
     // ============================================
@@ -256,6 +259,11 @@ try {
     app.use('/api/variations', variationsHandler);
 
     // ============================================
+    // NEW: Register account-variations route (Accounts uploads BDM/value/file)
+    // ============================================
+    app.use('/api/account-variations', accountVariationsHandler);
+
+    // ============================================
     // NEW: Register bdm-analytics route (COO/Director portal)
     // ============================================
     app.use('/api/bdm-analytics', bdmAnalyticsHandler);
@@ -334,13 +342,13 @@ app.use((err, req, res, next) => {
 // ============================================
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('');
-    console.log('╔═══════════════════════════════════════╗');
+    console.log('╔══════════════════════════════════════╗');
     console.log(`║  ✅ Server running on port ${PORT}      ║`);
     console.log(`║  🌍 Environment: ${(process.env.NODE_ENV || 'development').padEnd(20)}║`);
     const admin = require('./api/_firebase-admin');
     console.log(`║  🔥 Firebase: ${(admin.apps.length > 0 ? 'Initialized' : 'Not initialized').padEnd(23)}║`);
     console.log('║  🌐 CORS: Enabled for Vercel           ║');
-    console.log('╚═══════════════════════════════════════╝');
+    console.log('╚══════════════════════════════════════╝');
     console.log('');
     console.log('📡 API Endpoints ready:');
     console.log('   GET  /health');
@@ -359,6 +367,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('   GET  /api/bdm-analytics');
     console.log('   *    /api/bdm-entries');
     console.log('   *    /api/bdm-quote-sync');
+    console.log('   *    /api/account-variations');
     console.log('');
 });
 
