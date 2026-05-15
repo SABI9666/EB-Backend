@@ -14,7 +14,8 @@ const DESIGNER_TEAM_LEADS = [
     'muruganantham.tech@edanbrook.in',
     'aravindhan.tech@edanbrook.in',
     'sathish.tech@edanbrook.in',
-    'meeraj.tech@edanbrook.in'
+    'meeraj.tech@edanbrook.in',
+    'rebar.lead@edanbrook.com'
 ];
 
 // ============================================
