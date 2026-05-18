@@ -83,6 +83,11 @@ async function checkUploadPermissions(user, proposalId, fileType) {
     if (fileType === 'estimation' && user.role !== 'estimator') {
         throw new Error('Access denied: Only estimators can upload estimation files.');
     }
+    // Quotation templates are produced by the Estimator (or management) and
+    // consumed by the BDM via window.generateWordQuote.
+    if (fileType === 'quotationTemplate' && !['estimator', 'coo', 'director'].includes(user.role)) {
+        throw new Error('Access denied: Only estimators can upload quotation templates.');
+    }
     return true;
 }
 
