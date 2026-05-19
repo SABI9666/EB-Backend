@@ -1,7 +1,7 @@
 {
-  "name": "eb-traker-backend",
+  "name": "eb-tracker-backend",
   "version": "1.0.0",
-  "description": "EB Traker — Project Management Tool backend",
+  "description": "EB-Tracker — Project Management Tool backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -33,8 +33,8 @@
     "workflow",
     "firebase",
     "render",
-    "eb-traker"
+    "eb-tracker"
   ],
-  "author": "EB Traker",
+  "author": "EB-Tracker",
   "license": "MIT"
 }

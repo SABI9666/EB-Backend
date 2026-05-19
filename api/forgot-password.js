@@ -224,10 +224,10 @@ function getPasswordResetEmail(userName, resetLink) {
           <tr>
             <td style="padding: 20px 30px; background-color: #f8fafc; border-radius: 0 0 8px 8px; text-align: center;">
               <p style="margin: 0 0 10px 0; color: #64748b; font-size: 13px;">
-                This is an automated message from EB Traker. Do not reply to this email.
+                This is an automated message from EB-Tracker. Do not reply to this email.
               </p>
               <p style="margin: 0; color: #94a3b8; font-size: 12px;">
-                &copy; ${new Date().getFullYear()} EB Traker. All rights reserved.
+                &copy; ${new Date().getFullYear()} EB-Tracker. All rights reserved.
               </p>
             </td>
           </tr>
