@@ -8,10 +8,10 @@ const db = admin.firestore();
 const bucket = admin.storage().bucket();
 
 // Configure multer for memory storage (for PDF uploads through backend)
-const upload = multer({ 
+const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { 
-        fileSize: 3 * 1024 * 1024 * 1024 // 3GB limit
+    limits: {
+        fileSize: 50 * 1024 * 1024 // 50MB limit (server has 512MB RAM)
     }
 });
 
