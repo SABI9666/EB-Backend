@@ -317,6 +317,9 @@ const handler = async (req, res) => {
                             manhours: manhours,
                             totalHours: manhours, // Also store as totalHours for compatibility
                             tonnage: tonnage,
+                            quoteNumber: (data.quoteNumber && String(data.quoteNumber).trim() !== '')
+                                ? String(data.quoteNumber).trim()
+                                : null,
                             
                             // ✅ NEW CRITICAL FIELDS FOR ALLOCATION LOGIC
                             usedTonnageForDesign: usedTonnageForDesign,  // Boolean flag
@@ -376,6 +379,7 @@ const handler = async (req, res) => {
                     updates = {
                         pricing: {
                             projectNumber: data.projectNumber,
+                            quoteNumber: data.quoteNumber || null,
                             quoteValue: parseFloat(data.quoteValue),
                             currency: data.currency || 'USD',
                             hourlyRate: data.hourlyRate ? parseFloat(data.hourlyRate) : null,
@@ -389,7 +393,7 @@ const handler = async (req, res) => {
                         },
                         status: 'pricing_complete'
                     };
-                    activityDetail = `Pricing added: ${data.currency} ${data.quoteValue} (Project #: ${data.projectNumber})`;
+                    activityDetail = `Pricing added: ${data.currency} ${data.quoteValue} (Project #: ${data.projectNumber}${data.quoteNumber ? ', Quote #: ' + data.quoteNumber : ''})`;
 
                     // Notify BOTH COO and Director — either one can approve
                     try {
@@ -466,6 +470,9 @@ const handler = async (req, res) => {
                     updates = {
                         pricing: {
                             projectNumber: data.projectNumber,
+                            quoteNumber: (data.quoteNumber !== undefined && data.quoteNumber !== '')
+                                ? data.quoteNumber
+                                : (proposal.pricing.quoteNumber || null),
                             quoteValue: parseFloat(data.quoteValue),
                             currency: data.currency || 'USD',
                             hourlyRate: data.hourlyRate ? parseFloat(data.hourlyRate) : null,
