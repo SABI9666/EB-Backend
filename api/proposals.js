@@ -248,11 +248,21 @@ const handler = async (req, res) => {
                 projectName: projectName,
                 clientCompany: clientCompany
             });
-            
-            return res.status(201).json({ 
-                success: true, 
-                message: 'Proposal created successfully', 
-                data: { id: proposalRef.id, ...proposalData } 
+
+            // Notify COO, Director, Estimator (per EMAIL_RECIPIENT_MAP) plus
+            // any STATIC_EXTRA_RECIPIENTS configured for proposal.created.
+            sendEmailNotification('proposal.created', {
+                projectName: projectName,
+                clientName: clientCompany,
+                createdBy: req.user.name,
+                createdByEmail: req.user.email,
+                proposalId: proposalRef.id
+            }).catch(e => console.error('proposal.created email failed:', e.message));
+
+            return res.status(201).json({
+                success: true,
+                message: 'Proposal created successfully',
+                data: { id: proposalRef.id, ...proposalData }
             });
         }
 

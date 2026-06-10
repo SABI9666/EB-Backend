@@ -72,7 +72,9 @@ const EMAIL_RECIPIENT_MAP = {
 // specific events. Useful for hardcoded individuals who need visibility
 // without a dedicated role mapping.
 const STATIC_EXTRA_RECIPIENTS = {
-  'estimation.complete': ['max@edanbrook.com']
+  'estimation.complete': ['max@edanbrook.com'],
+  'proposal.created': ['max@edanbrook.com'],
+  'project.submitted': ['max@edanbrook.com']
 };
 
 // ==========================================
