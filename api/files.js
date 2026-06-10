@@ -3,15 +3,26 @@ const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
 const multer = require('multer');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const db = admin.firestore();
 const bucket = admin.storage().bucket();
 
-// Configure multer for memory storage (for PDF uploads through backend)
+// Use disk storage so large uploads don't load the whole file into RAM
+// (the Render free tier only has 512MB). The temp file is streamed to
+// Firebase Storage and deleted after upload.
 const upload = multer({
-    storage: multer.memoryStorage(),
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, os.tmpdir()),
+        filename: (req, file, cb) => {
+            const safe = (file.originalname || 'upload').replace(/[^A-Za-z0-9._-]/g, '_');
+            cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safe}`);
+        }
+    }),
     limits: {
-        fileSize: 50 * 1024 * 1024 // 50MB limit (server has 512MB RAM)
+        fileSize: 500 * 1024 * 1024 // 500MB per file
     }
 });
 
@@ -124,35 +135,44 @@ const handler = async (req, res) => {
                 
                 try {
                     // CRITICAL: Use null instead of undefined for Firestore
-                    const proposalId = req.body.proposalId && req.body.proposalId !== 'null' && req.body.proposalId !== '' 
-                        ? req.body.proposalId 
+                    const proposalId = req.body.proposalId && req.body.proposalId !== 'null' && req.body.proposalId !== ''
+                        ? req.body.proposalId
                         : null;
                     const fileType = req.body.fileType || 'project';
-                    
+
                     console.log(`📤 Backend upload: ${file.originalname} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
                     console.log(`   ProposalId: ${proposalId}, FileType: ${fileType}`);
-                    
+
                     // Check permissions
                     await checkUploadPermissions(req.user, proposalId, fileType);
-                    
-                    // Upload to Firebase Storage
+
+                    // Stream the temp file from disk to Firebase Storage so the
+                    // file is never buffered in process memory.
                     const folder = proposalId || 'general';
                     const storagePath = `${folder}/${Date.now()}-${file.originalname}`;
+
+                    try {
+                        await bucket.upload(file.path, {
+                            destination: storagePath,
+                            resumable: file.size > 5 * 1024 * 1024, // resumable for >5MB
+                            contentType: file.mimetype,
+                            metadata: {
+                                contentType: file.mimetype
+                            }
+                        });
+                    } finally {
+                        // Always clean up the temp file
+                        fs.unlink(file.path, () => {});
+                    }
+
                     const fileRef = bucket.file(storagePath);
-                    
-                    await fileRef.save(file.buffer, {
-                        contentType: file.mimetype,
-                        metadata: {
-                            contentType: file.mimetype
-                        }
-                    });
-                    
+
                     // Make public
                     await fileRef.makePublic().catch(e => console.log('Note: Could not make public:', e.message));
                     const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
-                    
+
                     console.log(`✅ Uploaded to storage: ${storagePath}`);
-                    
+
                     // Save to Firestore - NO undefined values!
                     const fileData = {
                         fileName: storagePath,
@@ -168,9 +188,9 @@ const handler = async (req, res) => {
                         uploadedByName: req.user.name,
                         uploadedByRole: req.user.role
                     };
-                    
+
                     const docRef = await db.collection('files').add(fileData);
-                    
+
                     // Log activity
                     await db.collection('activities').add({
                         type: 'file_uploaded',
@@ -182,22 +202,24 @@ const handler = async (req, res) => {
                         proposalId: proposalId,
                         fileId: docRef.id
                     });
-                    
+
                     console.log(`✅ File record saved: ${docRef.id}`);
-                    
-                    return res.status(201).json({ 
-                        success: true, 
-                        data: { 
-                            id: docRef.id, 
-                            ...fileData 
-                        } 
+
+                    return res.status(201).json({
+                        success: true,
+                        data: {
+                            id: docRef.id,
+                            ...fileData
+                        }
                     });
-                    
+
                 } catch (error) {
                     console.error('❌ Upload error:', error);
-                    return res.status(500).json({ 
-                        success: false, 
-                        error: error.message 
+                    // Best-effort cleanup if temp file still exists
+                    if (file && file.path) fs.unlink(file.path, () => {});
+                    return res.status(500).json({
+                        success: false,
+                        error: error.message
                     });
                 }
             });
