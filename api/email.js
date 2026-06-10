@@ -68,6 +68,15 @@ const EMAIL_RECIPIENT_MAP = {
   'allocation.contacts_added': ['document_controller', 'accounts']  // Contacts added → DC & Accounts
 };
 
+// Static (non-role-based) extra recipients that should always be CC'd for
+// specific events. Useful for hardcoded individuals who need visibility
+// without a dedicated role mapping.
+const STATIC_EXTRA_RECIPIENTS = {
+  'estimation.complete': ['max@edanbrook.com'],
+  'proposal.created': ['max@edanbrook.com'],
+  'project.submitted': ['max@edanbrook.com']
+};
+
 // ==========================================
 // PROFESSIONAL HTML EMAIL TEMPLATES
 // ==========================================
@@ -1130,6 +1139,13 @@ async function sendEmailNotification(event, data) {
   // 1. Get Recipients
   const roles = EMAIL_RECIPIENT_MAP[event] || [];
   let recipients = await getEmailsForRoles(roles);
+
+  // 1b. Add static (hardcoded) extra recipients for this event, if any.
+  const staticExtras = STATIC_EXTRA_RECIPIENTS[event] || [];
+  if (staticExtras.length) {
+      recipients = recipients.concat(staticExtras);
+      console.log(`📌 Added static recipients for ${event}: ${staticExtras.join(', ')}`);
+  }
 
   // 2. Dynamic Additions based on event type
   
