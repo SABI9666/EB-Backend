@@ -82,7 +82,7 @@ function pickAmount(obj, keys) {
 }
 
 const CURRENCY_TO_INR = {
-    INR: 1, USD: 83.5, AUD: 55.0, NZD: 51.0, EUR: 90.0,
+    INR: 1, USD: 90.0, AUD: 55.0, NZD: 51.0, EUR: 90.0,
     GBP: 105.0, SGD: 62.0, AED: 22.7, CAD: 61.0, JPY: 0.55
 };
 
