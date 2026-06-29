@@ -69,7 +69,7 @@ app.get('/health', (req, res) => {
 
 app.get('/', (req, res) => {
     res.json({
-        message: 'EBTracker Backend API',
+        message: 'West EPCM Technology Backend API',
         version: '1.4.1',
         status: 'running',
         endpoints: [
