@@ -537,7 +537,7 @@ router.get('/validate', async (req, res) => {
                 position: data.position,
                 jobDescription: data.jobDescription,
                 experienceRequired: data.experienceRequired,
-                companyName: 'EB-Tracker'
+                companyName: 'West EPCM Technology'
             }
         });
         
