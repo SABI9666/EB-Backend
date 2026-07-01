@@ -12,7 +12,7 @@ const db = admin.firestore();
 // ==========================================
 // CONFIGURATION
 // ==========================================
-const FROM_EMAIL = 'West EPCM Technology <ithelpdesk@edanbrook.com>'; 
+const FROM_EMAIL = 'West EPCM Technologies <ithelpdesk@edanbrook.com>'; 
 const HR_FROM_EMAIL = 'EDANBROOK HR <paul.a@edanbrook.com>'; // HR screening emails
 const DESIGN_FROM_EMAIL = 'EDANBROOK Design <iva@edanbrook.com>'; // Design file emails (used by Document Controller)
 const ACCOUNTS_FROM_EMAIL = 'Edanbrook Accounts <accounts@edanbrook.com>'; // Accounts/invoice emails
@@ -89,7 +89,7 @@ function getEmailWrapper(content, footerText = '') {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>West EPCM Technology Notification</title>
+  <title>West EPCM Technologies Notification</title>
 </head>
 <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7fa;">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f4f7fa;">
@@ -101,7 +101,7 @@ function getEmailWrapper(content, footerText = '') {
           <tr>
             <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
               <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600; letter-spacing: 0.5px;">
-                West EPCM Technology
+                West EPCM Technologies
               </h1>
               <p style="margin: 5px 0 0 0; color: #e0e7ff; font-size: 14px;">
                 Project Management System
@@ -120,7 +120,7 @@ function getEmailWrapper(content, footerText = '') {
           <tr>
             <td style="padding: 20px 30px; background-color: #f8fafc; border-radius: 0 0 8px 8px; text-align: center;">
               <p style="margin: 0 0 10px 0; color: #64748b; font-size: 13px;">
-                ${footerText || 'This is an automated notification from West EPCM Technology'}
+                ${footerText || 'This is an automated notification from West EPCM Technologies'}
               </p>
               <p style="margin: 0; color: #94a3b8; font-size: 12px;">
                 © ${new Date().getFullYear()} Edanbrook. All rights reserved.
@@ -216,11 +216,11 @@ function formatDate(date) {
 // ==========================================
 const EMAIL_TEMPLATE_MAP = {
   'default': {
-    subject: 'Notification from West EPCM Technology',
+    subject: 'Notification from West EPCM Technologies',
     html: (data) => getEmailWrapper(`
       <h2 style="margin: 0 0 20px 0; color: #1e293b; font-size: 20px;">Notification</h2>
       <p style="margin: 0; color: #475569; font-size: 15px; line-height: 1.6;">
-        ${data.message || 'You have a new notification from West EPCM Technology.'}
+        ${data.message || 'You have a new notification from West EPCM Technologies.'}
       </p>
       ${getButton('View Dashboard', DASHBOARD_URL)}
     `)
@@ -457,7 +457,7 @@ const EMAIL_TEMPLATE_MAP = {
                 <td style="width: 12px;"></td>
                 <td style="border-radius: 6px; background-color: #764ba2;">
                   <a href="${DASHBOARD_URL}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
-                    Open West EPCM Technology Portal
+                    Open West EPCM Technologies Portal
                   </a>
                 </td>
               </tr>
@@ -497,7 +497,7 @@ const EMAIL_TEMPLATE_MAP = {
                 <td style="width: 12px;"></td>
                 <td style="border-radius: 6px; background-color: #764ba2;">
                   <a href="${DASHBOARD_URL}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
-                    Open West EPCM Technology Portal
+                    Open West EPCM Technologies Portal
                   </a>
                 </td>
               </tr>
@@ -549,7 +549,7 @@ const EMAIL_TEMPLATE_MAP = {
         <tr>
           <td style="border-radius: 6px; background-color: #27ae60; text-align: center;">
             <a href="${DASHBOARD_URL}" target="_blank" style="display: inline-block; padding: 14px 32px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
-              Open West EPCM Technology Portal
+              Open West EPCM Technologies Portal
             </a>
           </td>
         </tr>
@@ -736,7 +736,7 @@ const EMAIL_TEMPLATE_MAP = {
                 <td style="width: 12px;"></td>
                 <td style="border-radius: 6px; background-color: #764ba2;">
                   <a href="${DASHBOARD_URL}" target="_blank" style="display: inline-block; padding: 14px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">
-                    Open West EPCM Technology Portal
+                    Open West EPCM Technologies Portal
                   </a>
                 </td>
               </tr>
