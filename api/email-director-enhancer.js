@@ -19,7 +19,7 @@ const { Resend } = require('resend');
 const admin = require('./_firebase-admin');
 
 const DASHBOARD_URL = 'https://edanbrook-tracker.web.app';
-const FROM_EMAIL = 'West EPCM Technology <ithelpdesk@edanbrook.com>';
+const FROM_EMAIL = 'West EPCM Technologies <ithelpdesk@edanbrook.com>';
 
 const DIRECTOR_EVENTS = new Set(['pricing.complete', 'pricing.updated']);
 
@@ -53,7 +53,7 @@ function buildDirectorApprovalHtml(event, data) {
 <tr><td align="center">
   <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 6px 18px rgba(15,23,42,0.08);">
     <tr><td style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:28px 32px;color:#ffffff;">
-      <h1 style="margin:0;font-size:20px;font-weight:600;">West EPCM Technology • Director Approval</h1>
+      <h1 style="margin:0;font-size:20px;font-weight:600;">West EPCM Technologies • Director Approval</h1>
     </td></tr>
     <tr><td style="padding:32px;">
       <h2 style="margin:0 0 14px 0;font-size:22px;color:#1e293b;">Director Approval – ${heading}</h2>
@@ -77,7 +77,7 @@ function buildDirectorApprovalHtml(event, data) {
           </td>
           <td style="width:12px;"></td>
           <td style="border-radius:6px;background:#764ba2;">
-            <a href="${DASHBOARD_URL}" target="_blank" style="display:inline-block;padding:14px 28px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:6px;">Open West EPCM Technology Portal</a>
+            <a href="${DASHBOARD_URL}" target="_blank" style="display:inline-block;padding:14px 28px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:6px;">Open West EPCM Technologies Portal</a>
           </td>
         </tr>
       </table>
@@ -86,7 +86,7 @@ function buildDirectorApprovalHtml(event, data) {
       </p>
     </td></tr>
     <tr><td style="padding:18px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b;text-align:center;">
-      This is an automated notification from West EPCM Technology. Director approval is required to proceed with this proposal.
+      This is an automated notification from West EPCM Technologies. Director approval is required to proceed with this proposal.
     </td></tr>
   </table>
 </td></tr>

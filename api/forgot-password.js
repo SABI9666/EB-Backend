@@ -119,9 +119,9 @@ const handler = async (req, res) => {
             const emailHtml = getPasswordResetEmail(userName, resetLink);
 
             const result = await resend.emails.send({
-                from: 'West EPCM Technology <sabin@edanbrook.com>',
+                from: 'West EPCM Technologies <sabin@edanbrook.com>',
                 to: [normalizedEmail],
-                subject: 'Password Reset - West EPCM Technology',
+                subject: 'Password Reset - West EPCM Technologies',
                 html: emailHtml
             });
 
@@ -162,7 +162,7 @@ function getPasswordResetEmail(userName, resetLink) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Password Reset - West EPCM Technology</title>
+  <title>Password Reset - West EPCM Technologies</title>
 </head>
 <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7fa;">
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f4f7fa;">
@@ -174,7 +174,7 @@ function getPasswordResetEmail(userName, resetLink) {
           <tr>
             <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
               <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600; letter-spacing: 0.5px;">
-                West EPCM Technology
+                West EPCM Technologies
               </h1>
               <p style="margin: 5px 0 0 0; color: #e0e7ff; font-size: 14px;">
                 Project Management System
@@ -192,7 +192,7 @@ function getPasswordResetEmail(userName, resetLink) {
                 Hi <strong>${userName}</strong>,
               </p>
               <p style="margin: 0 0 20px 0; color: #475569; font-size: 15px; line-height: 1.6;">
-                We received a request to reset your password for your West EPCM Technology account. Click the button below to set a new password:
+                We received a request to reset your password for your West EPCM Technologies account. Click the button below to set a new password:
               </p>
 
               <!-- Reset Button -->
@@ -224,10 +224,10 @@ function getPasswordResetEmail(userName, resetLink) {
           <tr>
             <td style="padding: 20px 30px; background-color: #f8fafc; border-radius: 0 0 8px 8px; text-align: center;">
               <p style="margin: 0 0 10px 0; color: #64748b; font-size: 13px;">
-                This is an automated message from West EPCM Technology. Do not reply to this email.
+                This is an automated message from West EPCM Technologies. Do not reply to this email.
               </p>
               <p style="margin: 0; color: #94a3b8; font-size: 12px;">
-                &copy; ${new Date().getFullYear()} West EPCM Technology. All rights reserved.
+                &copy; ${new Date().getFullYear()} West EPCM Technologies. All rights reserved.
               </p>
             </td>
           </tr>
