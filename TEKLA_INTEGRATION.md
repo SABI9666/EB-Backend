@@ -36,72 +36,28 @@ Firestore `tekla_reports`  ──►  COO/Director portal "Tekla Reports" view
 
 ## Step 2 — Choose how to push from Tekla
 
-### Option A (recommended): Tekla Open API plugin (C#/.NET)
+### Option A (recommended): Tekla macro — use the READY-MADE file
 
-Requires Tekla Structures + Visual Studio. References:
-`Tekla.Structures.dll`, `Tekla.Structures.Model.dll` (from the Tekla
-installation's `bin` folder). Runs inside Tekla; push on demand or on save.
+**Do not copy-paste code from this document.** Use the ready file in this
+repo: **[`tekla/PushModelData.cs`](tekla/PushModelData.cs)** — it is written
+for Tekla's built-in macro compiler (old C#: no `$"..."` interpolation, no
+`var`, classic `Script`/`Run` skeleton, `WebClient` + forced TLS 1.2).
 
-```csharp
-// TeklaReportPusher.cs — minimal Open API example
-using System;
-using System.Collections;
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
-using Tekla.Structures.Model;
+Install steps:
+1. Download `tekla/PushModelData.cs` from GitHub using **Raw → Save as**
+   (never copy from a rendered page — markdown code fences (```) and smart
+   quotes will break the compile with `CS1056: Unexpected character` errors).
+2. Place it in the Tekla environment macros folder, e.g.
+   `C:\TeklaStructures\2023.0\Environments\Australasia\macros\modeling\PushModelData.cs`
+3. Open the file in Notepad and paste your key into the `API_KEY` line.
+4. In Tekla: **Applications & components** → search `PushModelData` → run.
+   A popup confirms what was sent (tonnage, parts, assemblies) or shows the
+   exact error.
+5. Optional but recommended: define a project UDA `PLANNED_TONNAGE` on the
+   Tekla project — the portal uses it to compute the modeling completion %.
 
-public static class TeklaReportPusher
-{
-    const string API_URL = "https://eb-backend-rxu6.onrender.com/api/tekla-reports";
-    const string API_KEY = "PASTE_TEKLA_API_KEY_HERE";
-
-    public static void Push()
-    {
-        var model = new Model();
-        if (!model.GetConnectionStatus()) return;
-
-        double tonnage = 0; int parts = 0, assemblies = 0;
-        var enumerator = model.GetModelObjectSelector()
-            .GetAllObjectsWithType(ModelObject.ModelObjectEnum.PART);
-        while (enumerator.MoveNext())
-        {
-            if (enumerator.Current is Part part)
-            {
-                parts++;
-                double weight = 0;
-                part.GetReportProperty("WEIGHT", ref weight); // kg
-                tonnage += weight / 1000.0;
-                var assembly = part.GetAssembly();
-                if (assembly != null && part.GetAssembly().GetMainPart()?.Identifier.ID
-                        == part.Identifier.ID)
-                    assemblies++;
-            }
-        }
-
-        var payload = new
-        {
-            projectNumber = model.GetProjectInfo().ProjectNumber,
-            projectName   = model.GetProjectInfo().Name,
-            modelName     = model.GetInfo().ModelName,
-            reportType    = "model_summary",
-            teklaVersion  = Tekla.Structures.TeklaStructuresInfo.GetCurrentProgramVersion(),
-            workstation   = Environment.MachineName,
-            metrics = new { tonnage = Math.Round(tonnage, 2), assemblies, parts }
-        };
-
-        using var http = new HttpClient();
-        http.DefaultRequestHeaders.Add("X-Tekla-Api-Key", API_KEY);
-        var body = new StringContent(JsonSerializer.Serialize(payload),
-                                     Encoding.UTF8, "application/json");
-        var resp = http.PostAsync(API_URL, body).Result;
-        Console.WriteLine($"Tekla push: {(int)resp.StatusCode}");
-    }
-}
-```
-
-Build as a macro or plugin (`.cs` macro in `..\Environments\common\macros\modeling`
-is the fastest path — no compilation deploy needed).
+If your macro folder differs, check Tekla menu: File → Settings →
+`XS_MACRO_DIRECTORY`.
 
 ### Option B: Tekla report template + PowerShell watcher (no coding in Tekla)
 
