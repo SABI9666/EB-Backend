@@ -6,13 +6,22 @@ Operations & Management → Tekla Reports** dashboard.
 
 ```
 Tekla Structures (Windows workstation)
-   │  ① Open API plugin  – or –  ② report CSV + PowerShell  – or –  ③ portal form/CSV
+   │  ① Open API plugin  – or –  ② report CSV + PowerShell watcher
    ▼
 POST https://eb-backend-rxu6.onrender.com/api/tekla-reports
-   │  (header: X-Tekla-Api-Key)
+   │  (header: X-Tekla-Api-Key — machine push ONLY)
    ▼
 Firestore `tekla_reports`  ──►  COO/Director portal "Tekla Reports" view
 ```
+
+**Integrity by design**
+- Reports are accepted **only** from workstations holding the machine key —
+  there is **no manual entry or CSV upload in the portal**, so designers
+  cannot type or adjust figures. Numbers come straight from the model.
+- Viewing is restricted to **COO and Director** (enforced server-side).
+- Completion percentages are computed **server-side** from the pushed
+  metrics (modeled vs planned tonnage, drawings issued vs total), never
+  trusted from the client.
 
 ---
 
@@ -133,33 +142,51 @@ Write-Host "Pushed $CsvPath to West EPCM portal"
 3. Run it after generating the report (or schedule with Task Scheduler /
    attach to a Tekla macro that fires the report then the script).
 
-### Option C: No workstation setup at all
-
-Designers / Design Leads log into the portal and use **Tekla Reports →
-➕ Add Report** (manual entry) or **⬆ Import CSV** with the same column
-format as Option B. Good for day-1 while Option A/B is being set up.
+> There is intentionally **no Option C** (manual portal entry). Writes
+> require the machine key so the figures cannot be manipulated by hand.
 
 ---
 
-## Step 3 — View reports (COO / Director)
+## Step 3 — View reports (COO / Director only)
 
 **Operations & Management → Tekla Reports** shows:
-- Summary tiles: models reported, total tonnage (latest per model),
-  drawings issued vs total, report count.
-- Filterable table of every report (project, model, phase, tonnage,
-  assemblies, parts, drawings, source, who/when).
-- Row click → full details. COO/Director can delete bad entries.
+- Summary tiles: **average completion %**, models tracked, models with
+  pending work, modeled tonnage, drawings issued vs total.
+- A **progress board** — one card per model with MODELING / DRAWINGS /
+  OVERALL completion bars (green ≥80%, amber 40–79%, red <40%) and the
+  outstanding-work list ("12 drawings pending", "45.2 T modeling
+  remaining", plus any `pendingItems` the plugin reports).
+- Full report history table; row click → detail; COO/Director can delete
+  bad entries.
+
+## Progress fields the workstation should send
+
+| Field | Purpose |
+|---|---|
+| `metrics.tonnage` | Modeled tonnage so far (from model weights) |
+| `metrics.plannedTonnage` | Estimated/contract tonnage → server derives modeling % |
+| `metrics.modelingPercent` | OR send an explicit % (overrides the tonnage ratio) |
+| `metrics.drawingsTotal` / `drawingsIssued` | → server derives drawing % |
+| `pendingItems` | Array of strings — open phases/statuses, e.g. `["Phase 3 connections not modeled", "GA drawings unchecked"]` |
+
+CSV columns for Option B (add the new ones):
+`PROJECT,PROJECT_NAME,MODEL,PHASE,TONNAGE,PLANNED_TONNAGE,ASSEMBLIES,PARTS,BOLTS,DRAWINGS_TOTAL,DRAWINGS_ISSUED`
+and in the PowerShell payload add
+`plannedTonnage = [double]$_.PLANNED_TONNAGE` inside `metrics`.
 
 ## API reference
 
 `POST /api/tekla-reports`
-- Auth: header `X-Tekla-Api-Key: <key>` (machine) **or** portal Bearer token
-  (roles: designer, design_lead, coo, director).
+- Auth: header `X-Tekla-Api-Key: <key>` — **machine push only**. Portal
+  tokens are rejected for POST (manual entry disabled by design).
 - Body: `{ projectNumber, projectName, modelName, phase, reportType,
-  teklaVersion, workstation, notes, metrics: { tonnage, assemblies, parts,
+  teklaVersion, workstation, notes, pendingItems: [...],
+  metrics: { tonnage, plannedTonnage, modelingPercent, assemblies, parts,
   bolts, drawingsTotal, drawingsIssued }, rows: [...] }` (rows optional,
   ≤500, primitives only).
+- Server stores computed `progress: { modelingPercent, drawingPercent,
+  overallPercent, derivedPending }` alongside the raw metrics.
 
-`GET /api/tekla-reports` — list + per-model summary (coo/director/design_lead).
+`GET /api/tekla-reports` — list + per-model summary (**coo/director only**).
 `GET /api/tekla-reports?id=<docId>` — one report incl. detail rows.
 `DELETE /api/tekla-reports?id=<docId>` — coo/director only.
