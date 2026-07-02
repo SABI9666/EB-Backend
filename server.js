@@ -146,6 +146,8 @@ try {
     const gstFilingHandler = require('./api/gst-filing');
     console.log('  Loading petty-cash...');
     const pettyCashHandler = require('./api/petty-cash');
+    console.log('  Loading tekla-reports...');
+    const teklaReportsHandler = require('./api/tekla-reports');
 
     console.log('✅ All handlers loaded successfully');
     console.log('🔗 Registering routes...');
@@ -179,6 +181,7 @@ try {
     app.use('/api/daily-expenses', dailyExpensesHandler);
     app.use('/api/gst-filing', gstFilingHandler);
     app.use('/api/petty-cash', pettyCashHandler);
+    app.use('/api/tekla-reports', teklaReportsHandler);
 
     console.log('✅ All routes registered');
 } catch (error) {
