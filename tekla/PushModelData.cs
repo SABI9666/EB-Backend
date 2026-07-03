@@ -46,34 +46,31 @@ namespace Tekla.Technology.Akit.UserScript
                 int parts = 0;
                 int assemblies = 0;
 
-                // Select by System.Type: returns every Part subtype (Beam,
-                // PolyBeam, ContourPlate, ...). ModelObjectEnum has no PART
-                // member in Tekla 2023/2024, so the enum overload cannot be
-                // used here.
+                // Enumerate ALL model objects and filter in the loop. This is
+                // the most version-proof API path: GetAllObjects() exists in
+                // every Tekla release, while the typed/enum overloads of
+                // GetAllObjectsWithType vary between versions.
                 ModelObjectEnumerator objects =
-                    model.GetModelObjectSelector().GetAllObjectsWithType(typeof(Part));
+                    model.GetModelObjectSelector().GetAllObjects();
 
                 while (objects.MoveNext())
                 {
-                    Part part = objects.Current as Part;
-                    if (part == null)
+                    ModelObject obj = objects.Current;
+
+                    Part part = obj as Part;
+                    if (part != null)
                     {
+                        parts = parts + 1;
+
+                        double weightKg = 0.0;
+                        part.GetReportProperty("WEIGHT", ref weightKg);
+                        tonnage = tonnage + (weightKg / 1000.0);
                         continue;
                     }
-                    parts = parts + 1;
 
-                    double weightKg = 0.0;
-                    part.GetReportProperty("WEIGHT", ref weightKg);
-                    tonnage = tonnage + (weightKg / 1000.0);
-
-                    Assembly assembly = part.GetAssembly();
-                    if (assembly != null)
+                    if (obj is Assembly)
                     {
-                        ModelObject mainPart = assembly.GetMainPart();
-                        if (mainPart != null && mainPart.Identifier.ID == part.Identifier.ID)
-                        {
-                            assemblies = assemblies + 1;
-                        }
+                        assemblies = assemblies + 1;
                     }
                 }
 
