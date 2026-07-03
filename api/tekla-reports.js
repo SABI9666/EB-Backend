@@ -23,7 +23,7 @@ const db = admin.firestore();
 const allowCors = (fn) => async (req, res) => {
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
     res.setHeader(
         'Access-Control-Allow-Headers',
         'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization, X-Tekla-Api-Key'
@@ -43,26 +43,35 @@ const MAX_ROWS = 500;
 const MAX_PENDING_ITEMS = 50;
 
 // Completion percentages, computed server-side so the portal never trusts
-// client math. Modeling % prefers an explicit value from the Tekla plugin,
-// falling back to modeled vs planned tonnage. Drawing % = issued / total.
-function computeProgress(metrics) {
+// client math. Targets come from a management-set PLAN (tekla_plans, set by
+// COO/Director in the portal) with model-supplied values as fallback only —
+// the plan deliberately wins, so a designer editing model attributes cannot
+// inflate completion. Modeling % = modeled vs planned tonnage; drawing % =
+// issued vs target/total drawings.
+function computeProgress(metrics, plan) {
     const m = metrics || {};
+    const p = plan || {};
+
+    const plannedTonnage = num(p.plannedTonnage) > 0 ? num(p.plannedTonnage) : num(m.plannedTonnage);
+    const drawingsTotal = int(p.targetDrawings) > 0 ? int(p.targetDrawings) : int(m.drawingsTotal);
+    const drawingsIssued = int(m.drawingsIssued);
+
     let modelingPercent = null;
-    if (m.modelingPercent > 0) modelingPercent = Math.min(100, num(m.modelingPercent));
-    else if (num(m.plannedTonnage) > 0) modelingPercent = Math.min(100, (num(m.tonnage) / num(m.plannedTonnage)) * 100);
+    if (plannedTonnage > 0) modelingPercent = Math.min(100, (num(m.tonnage) / plannedTonnage) * 100);
+    else if (m.modelingPercent > 0) modelingPercent = Math.min(100, num(m.modelingPercent));
 
     let drawingPercent = null;
-    if (int(m.drawingsTotal) > 0) drawingPercent = Math.min(100, (int(m.drawingsIssued) / int(m.drawingsTotal)) * 100);
+    if (drawingsTotal > 0) drawingPercent = Math.min(100, (drawingsIssued / drawingsTotal) * 100);
 
     const parts = [modelingPercent, drawingPercent].filter((v) => v !== null);
     const overallPercent = parts.length ? parts.reduce((a, b) => a + b, 0) / parts.length : null;
 
     const pending = [];
-    if (num(m.plannedTonnage) > num(m.tonnage)) {
-        pending.push((num(m.plannedTonnage) - num(m.tonnage)).toFixed(1) + ' T modeling remaining');
+    if (plannedTonnage > num(m.tonnage)) {
+        pending.push((plannedTonnage - num(m.tonnage)).toFixed(1) + ' T modeling remaining');
     }
-    if (int(m.drawingsTotal) > int(m.drawingsIssued)) {
-        pending.push((int(m.drawingsTotal) - int(m.drawingsIssued)) + ' drawings pending');
+    if (drawingsTotal > drawingsIssued) {
+        pending.push((drawingsTotal - drawingsIssued) + ' drawings pending');
     }
 
     const round1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
@@ -70,8 +79,14 @@ function computeProgress(metrics) {
         modelingPercent: round1(modelingPercent),
         drawingPercent: round1(drawingPercent),
         overallPercent: round1(overallPercent),
+        plannedTonnage: plannedTonnage || null,
+        targetDrawings: drawingsTotal || null,
         derivedPending: pending
     };
+}
+
+function planDocId(projectNumber) {
+    return String(projectNumber || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
 }
 
 const handler = async (req, res) => {
@@ -178,12 +193,45 @@ const handler = async (req, res) => {
             return res.status(201).json({ success: true, data: { id: ref.id, ...doc, createdAt: new Date().toISOString() } });
         }
 
+        // ── PUT — set project plan targets (COO/Director ONLY) ─────────────
+        // Management defines the contract targets the actuals are measured
+        // against: planned tonnage and target drawing count per project.
+        if (req.method === 'PUT') {
+            if (isMachine || !['coo', 'director'].includes(role)) {
+                return res.status(403).json({ success: false, error: 'Only COO or Director can set project plans' });
+            }
+            const b = req.body || {};
+            const projectNumber = s(b.projectNumber).trim();
+            const docId = planDocId(projectNumber);
+            if (!docId) return res.status(400).json({ success: false, error: 'projectNumber is required' });
+
+            const plan = {
+                projectNumber: projectNumber,
+                plannedTonnage: num(b.plannedTonnage),
+                targetDrawings: int(b.targetDrawings),
+                notes: s(b.notes).slice(0, 500),
+                updatedBy: s(user.name || user.email),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            };
+            await db.collection('tekla_plans').doc(docId).set(plan, { merge: true });
+            console.log(`[tekla-reports] plan set for "${projectNumber}" by ${user.email}: ${plan.plannedTonnage} T / ${plan.targetDrawings} dwgs`);
+            return res.status(200).json({ success: true, data: plan });
+        }
+
         // ── GET — list + summary (portal only) ──────────────────────────────
         if (req.method === 'GET') {
             if (isMachine) return res.status(403).json({ success: false, error: 'Machine key is write-only' });
             if (!READ_ROLES.includes(role)) {
                 return res.status(403).json({ success: false, error: 'Only COO and Director can view Tekla reports' });
             }
+
+            // Management-set plans, keyed by normalized project number
+            const plans = {};
+            try {
+                const planSnap = await db.collection('tekla_plans').limit(500).get();
+                planSnap.docs.forEach((d) => { plans[d.id] = d.data(); });
+            } catch (e) { console.warn('[tekla-reports] plans read failed:', e.message); }
+            const planFor = (projectNumber) => plans[planDocId(projectNumber)] || null;
 
             // Single report with full detail rows
             if (req.query.id) {
@@ -195,7 +243,7 @@ const handler = async (req, res) => {
                     data: {
                         id: doc.id,
                         ...data,
-                        progress: data.progress || computeProgress(data.metrics),
+                        progress: computeProgress(data.metrics, planFor(data.projectNumber)),
                         createdAt: data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().toISOString() : null
                     }
                 });
@@ -213,8 +261,8 @@ const handler = async (req, res) => {
                 return {
                     id: d.id,
                     ...data,
-                    // Recompute progress on read so legacy docs get it too
-                    progress: data.progress || computeProgress(data.metrics),
+                    // Always recompute on read so plan changes apply instantly
+                    progress: computeProgress(data.metrics, planFor(data.projectNumber)),
                     // Trim heavy detail rows out of the list payload
                     rows: undefined,
                     createdAt: data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().toISOString() : null
@@ -252,7 +300,7 @@ const handler = async (req, res) => {
                 pendingModels: pendingModels
             };
 
-            return res.status(200).json({ success: true, data: { reports, models, summary } });
+            return res.status(200).json({ success: true, data: { reports, models, summary, plans } });
         }
 
         // ── GET one report's detail rows via ?id= handled above by list; DELETE ──
