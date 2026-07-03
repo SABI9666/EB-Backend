@@ -5,8 +5,9 @@
 // INSTALL (Tekla admin):
 //   1. Download this file AS-IS (raw file — do NOT copy from a web page that
 //      shows ``` characters; those are formatting, not code).
-//   2. Place it in your Tekla environment macros folder, e.g.:
-//        C:\TeklaStructures\2023.0\Environments\Australasia\macros\modeling\PushModelData.cs
+//   2. Place it in your Tekla environment macros\modeling folder, e.g.:
+//        Tekla 2024: C:\ProgramData\Trimble\Tekla Structures\2024.0\Environments\common\macros\modeling\PushModelData.cs
+//        Tekla 2023: C:\TeklaStructures\2023.0\Environments\<env>\macros\modeling\PushModelData.cs
 //   3. Edit ONE line below: paste your key into API_KEY.
 //   4. In Tekla: Applications & components -> search "PushModelData" -> run.
 //      A popup confirms success or shows the error.
@@ -45,9 +46,12 @@ namespace Tekla.Technology.Akit.UserScript
                 int parts = 0;
                 int assemblies = 0;
 
+                // Select by System.Type: returns every Part subtype (Beam,
+                // PolyBeam, ContourPlate, ...). ModelObjectEnum has no PART
+                // member in Tekla 2023/2024, so the enum overload cannot be
+                // used here.
                 ModelObjectEnumerator objects =
-                    model.GetModelObjectSelector().GetAllObjectsWithType(
-                        ModelObject.ModelObjectEnum.PART);
+                    model.GetModelObjectSelector().GetAllObjectsWithType(typeof(Part));
 
                 while (objects.MoveNext())
                 {
