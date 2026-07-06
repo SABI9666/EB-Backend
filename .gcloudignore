@@ -1,0 +1,10 @@
+# Files NOT uploaded to Cloud Build when deploying with `gcloud run deploy`.
+.git
+.gitignore
+node_modules
+.env
+.env.*
+*.md
+tekla
+.vscode
+.idea

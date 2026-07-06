@@ -50,7 +50,16 @@ if (!admin.apps.length) {
       console.log('✓ Firebase Admin initialized successfully with separate variables');
       
     } else {
-      throw new Error('No Firebase credentials found. Please set either FIREBASE_SERVICE_ACCOUNT_KEY_BASE64 or individual Firebase environment variables.');
+      // Application Default Credentials (ADC). On Google Cloud Run/Functions
+      // running in the same GCP project as this Firebase app, no key is
+      // needed — the runtime service account is used automatically. This is
+      // the recommended, key-less setup after migrating to Cloud Run.
+      console.log('Using Application Default Credentials (Cloud Run / GCP runtime).');
+      admin.initializeApp({
+        credential: admin.credential.applicationDefault(),
+        storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'eb-tracker-ff945.firebasestorage.app'
+      });
+      console.log('✓ Firebase Admin initialized successfully with ADC');
     }
     
   } catch (error) {
