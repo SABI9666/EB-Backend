@@ -28,7 +28,7 @@ namespace Tekla.Technology.Akit.UserScript
 {
     public class Script
     {
-        private const string API_URL = "https://eb-backend-rxu6.onrender.com/api/tekla-reports";
+        private const string API_URL = "https://west-epcm-backend-854824137821.us-central1.run.app/api/tekla-reports";
         private const string API_KEY = "PASTE_TEKLA_API_KEY_HERE";
 
         public static void Run(Tekla.Technology.Akit.IScript akit)

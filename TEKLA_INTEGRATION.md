@@ -8,7 +8,7 @@ Operations & Management → Tekla Reports** dashboard.
 Tekla Structures (Windows workstation)
    │  ① Open API plugin  – or –  ② report CSV + PowerShell watcher
    ▼
-POST https://eb-backend-rxu6.onrender.com/api/tekla-reports
+POST https://west-epcm-backend-854824137821.us-central1.run.app/api/tekla-reports
    │  (header: X-Tekla-Api-Key — machine push ONLY)
    ▼
 Firestore `tekla_reports`  ──►  COO/Director portal "Tekla Reports" view
@@ -69,7 +69,7 @@ If your macro folder differs, check Tekla menu: File → Settings →
 
 ```powershell
 param([string]$CsvPath = "C:\TeklaReports\model_summary.csv")
-$API = "https://eb-backend-rxu6.onrender.com/api/tekla-reports"
+$API = "https://west-epcm-backend-854824137821.us-central1.run.app/api/tekla-reports"
 $KEY = "PASTE_TEKLA_API_KEY_HERE"
 
 Import-Csv $CsvPath | ForEach-Object {
