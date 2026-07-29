@@ -48,7 +48,7 @@ const MAX_PENDING_ITEMS = 50;
 // the plan deliberately wins, so a designer editing model attributes cannot
 // inflate completion. Modeling % = modeled vs planned tonnage; drawing % =
 // issued vs target/total drawings.
-function computeProgress(metrics, plan) {
+function computeProgress(metrics, plan, activities) {
     const m = metrics || {};
     const p = plan || {};
 
@@ -63,7 +63,23 @@ function computeProgress(metrics, plan) {
     let drawingPercent = null;
     if (drawingsTotal > 0) drawingPercent = Math.min(100, (drawingsIssued / drawingsTotal) * 100);
 
-    const parts = [modelingPercent, drawingPercent].filter((v) => v !== null);
+    // Activity-reported percentages refine the derived ones. A workstation
+    // that reports 'modeling' / 'drafting' explicitly overrides the value
+    // inferred from tonnage / drawing counts.
+    const acts = activities || {};
+    if (acts.modeling && acts.modeling.percent !== null && acts.modeling.percent !== undefined) {
+        modelingPercent = acts.modeling.percent;
+    }
+    if (acts.drafting && acts.drafting.percent !== null && acts.drafting.percent !== undefined) {
+        drawingPercent = acts.drafting.percent;
+    }
+
+    // Overall = mean of every activity that reported a percentage, falling
+    // back to the two derived figures when no activities were sent.
+    const actPcts = Object.keys(acts)
+        .map((k) => acts[k] && acts[k].percent)
+        .filter((v) => v !== null && v !== undefined);
+    const parts = actPcts.length ? actPcts : [modelingPercent, drawingPercent].filter((v) => v !== null);
     const overallPercent = parts.length ? parts.reduce((a, b) => a + b, 0) / parts.length : null;
 
     const pending = [];
@@ -73,6 +89,15 @@ function computeProgress(metrics, plan) {
     if (drawingsTotal > drawingsIssued) {
         pending.push((drawingsTotal - drawingsIssued) + ' drawings pending');
     }
+    Object.keys(acts).forEach((k) => {
+        const a = acts[k];
+        if (!a) return;
+        if (a.percent !== null && a.percent !== undefined && a.percent < 100) {
+            const left = (a.total > 0 && a.done >= 0 && a.total > a.done)
+                ? ' (' + (a.total - a.done) + ' ' + (a.unit || 'items') + ' left)' : '';
+            pending.push(k + ' at ' + a.percent + '%' + left);
+        }
+    });
 
     const round1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
     return {
@@ -83,6 +108,48 @@ function computeProgress(metrics, plan) {
         targetDrawings: drawingsTotal || null,
         derivedPending: pending
     };
+}
+
+// ── Per-activity progress ──────────────────────────────────────────────
+// Detailing, drafting, checking etc. are tracked SEPARATELY from raw model
+// metrics so each process reports its own status. The Tekla workstation
+// pushes these; the portal renders one row per activity.
+const ACTIVITY_KEYS = [
+    'modeling', 'connection', 'detailing', 'drafting',
+    'checking', 'revisions', 'nc', 'ifc', 'bbs'
+];
+const WORK_TYPES = ['steel', 'rebar'];
+
+// Accepts either { detailing: {...}, drafting: {...} } or
+// [ { key:'detailing', ... }, ... ]. Unknown keys are ignored.
+function normalizeActivities(input) {
+    const out = {};
+    if (!input) return out;
+    const entries = Array.isArray(input)
+        ? input.map((a) => [s(a && a.key).toLowerCase(), a])
+        : Object.keys(input).map((k) => [s(k).toLowerCase(), input[k]]);
+
+    entries.forEach(([key, a]) => {
+        if (!key || !ACTIVITY_KEYS.includes(key) || !a || typeof a !== 'object') return;
+        const done = int(a.done);
+        const total = int(a.total);
+        // Explicit percent wins; otherwise derive from done/total.
+        let pct = null;
+        if (a.percent !== undefined && a.percent !== null && a.percent !== '') {
+            pct = Math.max(0, Math.min(100, num(a.percent)));
+        } else if (total > 0) {
+            pct = Math.max(0, Math.min(100, (done / total) * 100));
+        }
+        out[key] = {
+            percent: pct === null ? null : Math.round(pct * 10) / 10,
+            done: done,
+            total: total,
+            unit: s(a.unit).slice(0, 20),
+            note: s(a.note).slice(0, 300),
+            updatedAt: new Date().toISOString()
+        };
+    });
+    return out;
 }
 
 function planDocId(projectNumber) {
@@ -152,7 +219,10 @@ const handler = async (req, res) => {
                 drawingsTotal: int(m.drawingsTotal),
                 drawingsIssued: int(m.drawingsIssued)
             };
-            const progress = computeProgress(metrics);
+            const workType = WORK_TYPES.includes(s(b.workType).toLowerCase())
+                ? s(b.workType).toLowerCase() : 'steel';
+            const activities = normalizeActivities(b.activities);
+            const progress = computeProgress(metrics, null, activities);
 
             const doc = {
                 projectNumber: projectNumber,
@@ -160,7 +230,9 @@ const handler = async (req, res) => {
                 modelName: modelName,
                 phase: s(b.phase).trim(),
                 reportType: reportType,
+                workType: workType,
                 metrics: metrics,
+                activities: activities,
                 progress: progress,
                 pendingItems: pendingItems,
                 rows: rows,
@@ -243,7 +315,7 @@ const handler = async (req, res) => {
                     data: {
                         id: doc.id,
                         ...data,
-                        progress: computeProgress(data.metrics, planFor(data.projectNumber)),
+                        progress: computeProgress(data.metrics, planFor(data.projectNumber), data.activities),
                         createdAt: data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().toISOString() : null
                     }
                 });
@@ -262,7 +334,7 @@ const handler = async (req, res) => {
                     id: d.id,
                     ...data,
                     // Always recompute on read so plan changes apply instantly
-                    progress: computeProgress(data.metrics, planFor(data.projectNumber)),
+                    progress: computeProgress(data.metrics, planFor(data.projectNumber), data.activities),
                     // Trim heavy detail rows out of the list payload
                     rows: undefined,
                     createdAt: data.createdAt && data.createdAt.toDate ? data.createdAt.toDate().toISOString() : null
