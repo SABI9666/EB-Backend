@@ -62,6 +62,7 @@ namespace Tekla.Technology.Akit.UserScript
         private static RadioButton _rbRebar;
         private static Panel _rowsPanel;
         private static TextBox _tbNotes;
+        private static TextBox _tbDesigner;
         private static Label _lblInfo;
         private static List<string> _keys = new List<string>();
         private static List<NumericUpDown> _pcts = new List<NumericUpDown>();
@@ -208,6 +209,18 @@ namespace Tekla.Technology.Akit.UserScript
             _rowsPanel.AutoScroll = true;
             _form.Controls.Add(_rowsPanel);
 
+            Label dl = new Label();
+            dl.Text = "Designer";
+            dl.SetBounds(330, 74, 60, 18);
+            _form.Controls.Add(dl);
+
+            _tbDesigner = new TextBox();
+            // Pre-filled with the signed-in Windows user so each designer's
+            // push is attributed to them; editable for shared workstations.
+            _tbDesigner.Text = Environment.UserName;
+            _tbDesigner.SetBounds(330, 94, 284, 22);
+            _form.Controls.Add(_tbDesigner);
+
             Label nl = new Label();
             nl.Text = "Notes / blockers (optional)";
             nl.SetBounds(14, 442, 300, 18);
@@ -317,6 +330,11 @@ namespace Tekla.Technology.Akit.UserScript
                     MessageBox.Show("Enter progress for at least one process.", "Daily Status");
                     return;
                 }
+                if (_tbDesigner.Text.Trim().Length == 0)
+                {
+                    MessageBox.Show("Enter the designer name.", "Daily Status");
+                    return;
+                }
 
                 StringBuilder json = new StringBuilder();
                 json.Append("{");
@@ -326,6 +344,7 @@ namespace Tekla.Technology.Akit.UserScript
                 json.Append("\"reportType\":\"model_summary\",");
                 json.Append("\"workType\":\"").Append(_rbSteel.Checked ? "steel" : "rebar").Append("\",");
                 json.Append("\"workstation\":\"").Append(Esc(Environment.MachineName)).Append("\",");
+                json.Append("\"designer\":\"").Append(Esc(_tbDesigner.Text.Trim())).Append("\",");
                 json.Append("\"notes\":\"").Append(Esc(_tbNotes.Text)).Append("\",");
                 json.Append("\"metrics\":{");
                 json.Append("\"tonnage\":").Append(Math.Round(_tonnage, 2).ToString(inv)).Append(",");
@@ -344,7 +363,8 @@ namespace Tekla.Technology.Akit.UserScript
 
                 MarkPushedToday();
                 MessageBox.Show("Sent to West EPCM portal.\n\nProcesses reported: "
-                    + reported.ToString() + "\nProject: " + _projectNumber,
+                    + reported.ToString() + "\nProject: " + _projectNumber
+                    + "\nDesigner: " + _tbDesigner.Text.Trim(),
                     "Daily Status — OK");
                 _form.Close();
             }
