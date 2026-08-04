@@ -146,6 +146,9 @@ function normalizeActivities(input) {
             total: total,
             unit: s(a.unit).slice(0, 20),
             note: s(a.note).slice(0, 300),
+            // 'auto'   = computed by the macro from the model itself
+            // 'manual' = typed by the designer
+            source: s(a.source).toLowerCase() === 'auto' ? 'auto' : 'manual',
             updatedAt: new Date().toISOString()
         };
     });
