@@ -146,10 +146,42 @@ function normalizeActivities(input) {
             total: total,
             unit: s(a.unit).slice(0, 20),
             note: s(a.note).slice(0, 300),
+            // 'auto'   = computed by the macro from the model itself
+            // 'manual' = typed by the designer
+            source: s(a.source).toLowerCase() === 'auto' ? 'auto' : 'manual',
             updatedAt: new Date().toISOString()
         };
     });
     return out;
+}
+
+function isToday(iso) {
+    if (!iso) return false;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return false;
+    const n = new Date();
+    return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+}
+
+// One entry per designer: how many reports they pushed, their latest push
+// and which projects they touched. Newest pusher first.
+function designerRollup(reports) {
+    const by = {};
+    (reports || []).forEach((r) => {
+        const name = s(r.designerName || r.reportedByName || r.workstation || 'Unknown').trim();
+        if (!by[name]) {
+            by[name] = { name: name, email: s(r.designerEmail), reports: 0, lastPush: null, projects: [], pushedToday: false };
+        }
+        const e = by[name];
+        e.reports += 1;
+        if (!e.lastPush || (r.createdAt && r.createdAt > e.lastPush)) e.lastPush = r.createdAt || e.lastPush;
+        if (isToday(r.createdAt)) e.pushedToday = true;
+        const pn = s(r.projectNumber);
+        if (pn && e.projects.indexOf(pn) === -1) e.projects.push(pn);
+    });
+    return Object.keys(by)
+        .map((k) => by[k])
+        .sort((a, b) => String(b.lastPush || '').localeCompare(String(a.lastPush || '')));
 }
 
 function planDocId(projectNumber) {
@@ -240,8 +272,14 @@ const handler = async (req, res) => {
                 notes: s(b.notes).slice(0, 2000),
                 source: 'tekla-plugin',
                 teklaVersion: s(b.teklaVersion),
+                // WHO reported. The macro sends the signed-in Windows user so
+                // each designer's daily push is attributed to them, not just
+                // to a shared workstation name.
+                designerName: s(b.designer || b.designerName).trim().slice(0, 120),
+                designerEmail: s(b.designerEmail).trim().toLowerCase().slice(0, 160),
+                workstation: s(b.workstation).trim().slice(0, 120),
                 reportedByUid: 'machine',
-                reportedByName: s(b.workstation || 'Tekla Workstation'),
+                reportedByName: s(b.designer || b.designerName || b.workstation || 'Tekla Workstation'),
                 reportedByRole: 'machine',
                 createdAt: admin.firestore.FieldValue.serverTimestamp()
             };
@@ -369,7 +407,11 @@ const handler = async (req, res) => {
                 avgCompletion: completions.length
                     ? Math.round((completions.reduce((a, b) => a + b, 0) / completions.length) * 10) / 10
                     : null,
-                pendingModels: pendingModels
+                pendingModels: pendingModels,
+                // Who pushed, and when they last did — lets management see at
+                // a glance which designers reported today and which are stale.
+                designers: designerRollup(reports),
+                pushedToday: reports.filter((r) => isToday(r.createdAt)).length
             };
 
             return res.status(200).json({ success: true, data: { reports, models, summary, plans } });

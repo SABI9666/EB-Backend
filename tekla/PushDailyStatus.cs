@@ -6,6 +6,17 @@
 // and BBS for rebar). The detailer enters % for each, presses Push, and the
 // figures appear in the portal's Tekla Reports for COO / Director.
 //
+// AUTOMATIC PERCENTAGES
+//   Where the model itself can answer the question, the row is pre-filled
+//   and marked "(auto)". Nothing is typed for these:
+//     Modeling  = modelled tonnage / PLANNED_TONNAGE project attribute
+//     Detailing = parts carrying an assembly position / all parts
+//     Drafting  = *.dg files in <model>\drawings / assemblies
+//     NC/DSTV   = *.nc1 files in the model folder / all parts
+//   Each auto row is sent with source="auto" plus the figures it was
+//   derived from, so management can tell computed values from typed ones.
+//   If the designer edits an auto row it is sent as source="manual".
+//
 // DAILY PROMPT
 //   The macro records the last successful push per model under
 //   %APPDATA%\WestEPCM\. If a push already happened today it exits silently
@@ -62,18 +73,34 @@ namespace Tekla.Technology.Akit.UserScript
         private static RadioButton _rbRebar;
         private static Panel _rowsPanel;
         private static TextBox _tbNotes;
+        private static TextBox _tbDesigner;
         private static Label _lblInfo;
         private static List<string> _keys = new List<string>();
         private static List<NumericUpDown> _pcts = new List<NumericUpDown>();
         private static List<TextBox> _dones = new List<TextBox>();
         private static List<TextBox> _totals = new List<TextBox>();
 
+        private static List<bool> _autoFlags = new List<bool>();
+        private static List<decimal> _autoSeed = new List<decimal>();
+
         private static string _projectNumber = "";
         private static string _projectName = "";
         private static string _modelName = "";
+        private static string _modelPath = "";
         private static double _tonnage = 0.0;
         private static int _parts = 0;
         private static int _assemblies = 0;
+
+        // Figures used by the automatic percentage logic.
+        private static int _partsNumbered = 0;
+        private static double _plannedTonnage = 0.0;
+        private static int _dgFiles = 0;
+        private static int _ncFiles = 0;
+
+        // key -> { percent, done, total }   (-1 = not available)
+        private static Dictionary<string, double[]> _auto = new Dictionary<string, double[]>();
+        // key -> short explanation of how the percentage was derived
+        private static Dictionary<string, string> _autoNote = new Dictionary<string, string>();
 
         public static void Run(Tekla.Technology.Akit.IScript akit)
         {
@@ -87,6 +114,7 @@ namespace Tekla.Technology.Akit.UserScript
                 }
 
                 ReadModel(model);
+                ComputeAuto();
 
                 if (!FORCE_ALWAYS_SHOW && AlreadyPushedToday())
                 {
@@ -115,6 +143,16 @@ namespace Tekla.Technology.Akit.UserScript
                     double w = 0.0;
                     part.GetReportProperty("WEIGHT", ref w);
                     _tonnage = _tonnage + (w / 1000.0);
+
+                    // A part that already carries an assembly position has
+                    // been numbered — that is the detailing progress signal.
+                    string pos = "";
+                    part.GetReportProperty("ASSEMBLY_POS", ref pos);
+                    if (pos != null)
+                    {
+                        pos = pos.Trim();
+                        if (pos.Length > 0 && pos != "0") { _partsNumbered = _partsNumbered + 1; }
+                    }
                     continue;
                 }
                 if (obj is Assembly) { _assemblies = _assemblies + 1; }
@@ -123,7 +161,99 @@ namespace Tekla.Technology.Akit.UserScript
             ProjectInfo info = model.GetProjectInfo();
             _projectNumber = info.ProjectNumber;
             _projectName = info.Name;
-            _modelName = model.GetInfo().ModelName;
+
+            ModelInfo mi = model.GetInfo();
+            _modelName = mi.ModelName;
+            _modelPath = mi.ModelPath;
+
+            // Planned tonnage comes from a project attribute set by the
+            // project engineer, so modeling % can be derived without typing.
+            double planned = 0.0;
+            if (info.GetUserProperty("PLANNED_TONNAGE", ref planned)) { _plannedTonnage = planned; }
+            if (_plannedTonnage <= 0.0)
+            {
+                double planned2 = 0.0;
+                if (info.GetUserProperty("EST_TONNAGE", ref planned2)) { _plannedTonnage = planned2; }
+            }
+
+            // Drawings and NC files live on disk — counting them needs no
+            // extra Tekla API and works on every version.
+            _dgFiles = CountFiles(Path.Combine(_modelPath, "drawings"), "*.dg", false);
+            _ncFiles = CountNcFiles();
+        }
+
+        private static int CountFiles(string folder, string pattern, bool recurse)
+        {
+            try
+            {
+                if (folder == null || folder.Length == 0) { return 0; }
+                if (!Directory.Exists(folder)) { return 0; }
+                SearchOption opt = recurse ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+                return Directory.GetFiles(folder, pattern, opt).Length;
+            }
+            catch (Exception) { return 0; }
+        }
+
+        private static int CountNcFiles()
+        {
+            if (_modelPath == null || _modelPath.Length == 0) { return 0; }
+            string[] candidates = { "DSTV_Profiles", "DSTV", "NC", "nc_files", "DSTV_Plates" };
+            int total = 0;
+            int i;
+            for (i = 0; i < candidates.Length; i++)
+            {
+                total = total + CountFiles(Path.Combine(_modelPath, candidates[i]), "*.nc1", true);
+            }
+            total = total + CountFiles(_modelPath, "*.nc1", false);
+            return total;
+        }
+
+        // ── Automatic percentages derived from the model itself ──────────
+        // Only processes with a reliable signal are filled in. Everything
+        // else stays blank for the designer to enter.
+        private static void ComputeAuto()
+        {
+            _auto.Clear();
+            _autoNote.Clear();
+
+            if (_plannedTonnage > 0.0 && _tonnage > 0.0)
+            {
+                double p = (_tonnage / _plannedTonnage) * 100.0;
+                _auto["modeling"] = new double[] { Clamp(p), -1.0, -1.0 };
+                _autoNote["modeling"] = "auto: " + Math.Round(_tonnage, 2).ToString(CultureInfo.InvariantCulture)
+                    + " T modelled of " + Math.Round(_plannedTonnage, 2).ToString(CultureInfo.InvariantCulture) + " T planned";
+            }
+
+            if (_parts > 0)
+            {
+                double p = ((double)_partsNumbered / (double)_parts) * 100.0;
+                _auto["detailing"] = new double[] { Clamp(p), (double)_partsNumbered, (double)_parts };
+                _autoNote["detailing"] = "auto: " + _partsNumbered.ToString(CultureInfo.InvariantCulture)
+                    + " of " + _parts.ToString(CultureInfo.InvariantCulture) + " parts numbered";
+            }
+
+            if (_assemblies > 0 && _dgFiles > 0)
+            {
+                double p = ((double)_dgFiles / (double)_assemblies) * 100.0;
+                _auto["drafting"] = new double[] { Clamp(p), (double)_dgFiles, (double)_assemblies };
+                _autoNote["drafting"] = "auto: " + _dgFiles.ToString(CultureInfo.InvariantCulture)
+                    + " drawings for " + _assemblies.ToString(CultureInfo.InvariantCulture) + " assemblies";
+            }
+
+            if (_parts > 0 && _ncFiles > 0)
+            {
+                double p = ((double)_ncFiles / (double)_parts) * 100.0;
+                _auto["nc"] = new double[] { Clamp(p), (double)_ncFiles, (double)_parts };
+                _autoNote["nc"] = "auto: " + _ncFiles.ToString(CultureInfo.InvariantCulture)
+                    + " NC files for " + _parts.ToString(CultureInfo.InvariantCulture) + " parts";
+            }
+        }
+
+        private static double Clamp(double v)
+        {
+            if (v < 0.0) { return 0.0; }
+            if (v > 100.0) { return 100.0; }
+            return Math.Round(v, 0);
         }
 
         // ── Daily throttle: one file per model under %APPDATA%\WestEPCM ──
@@ -177,7 +307,9 @@ namespace Tekla.Technology.Akit.UserScript
 
             _lblInfo = new Label();
             _lblInfo.Text = "From model: " + Math.Round(_tonnage, 2).ToString(CultureInfo.InvariantCulture)
-                + " T | " + _parts.ToString() + " parts | " + _assemblies.ToString() + " assemblies";
+                + " T | " + _parts.ToString() + " parts (" + _partsNumbered.ToString() + " numbered) | "
+                + _assemblies.ToString() + " assemblies | " + _dgFiles.ToString() + " drawings | "
+                + _ncFiles.ToString() + " NC files";
             _lblInfo.ForeColor = Color.DimGray;
             _lblInfo.SetBounds(14, 34, 600, 18);
             _form.Controls.Add(_lblInfo);
@@ -200,13 +332,31 @@ namespace Tekla.Technology.Akit.UserScript
             Label hdr = new Label();
             hdr.Text = "Process                                   % complete      done / total";
             hdr.ForeColor = Color.DimGray;
-            hdr.SetBounds(16, 116, 600, 18);
+            hdr.SetBounds(16, 112, 600, 18);
             _form.Controls.Add(hdr);
 
+            Label legend = new Label();
+            legend.Text = "Rows marked (auto) are calculated from the model — change only if wrong.";
+            legend.ForeColor = Color.FromArgb(0, 110, 115);
+            legend.SetBounds(16, 130, 600, 18);
+            _form.Controls.Add(legend);
+
             _rowsPanel = new Panel();
-            _rowsPanel.SetBounds(14, 136, 600, 300);
+            _rowsPanel.SetBounds(14, 150, 600, 286);
             _rowsPanel.AutoScroll = true;
             _form.Controls.Add(_rowsPanel);
+
+            Label dl = new Label();
+            dl.Text = "Designer";
+            dl.SetBounds(330, 74, 60, 18);
+            _form.Controls.Add(dl);
+
+            _tbDesigner = new TextBox();
+            // Pre-filled with the signed-in Windows user so each designer's
+            // push is attributed to them; editable for shared workstations.
+            _tbDesigner.Text = Environment.UserName;
+            _tbDesigner.SetBounds(330, 94, 284, 22);
+            _form.Controls.Add(_tbDesigner);
 
             Label nl = new Label();
             nl.Text = "Notes / blockers (optional)";
@@ -241,16 +391,21 @@ namespace Tekla.Technology.Akit.UserScript
         {
             _rowsPanel.Controls.Clear();
             _keys.Clear(); _pcts.Clear(); _dones.Clear(); _totals.Clear();
+            _autoFlags.Clear(); _autoSeed.Clear();
 
             string[] keys = _rbSteel.Checked ? STEEL_KEYS : REBAR_KEYS;
             string[] labels = _rbSteel.Checked ? STEEL_LABELS : REBAR_LABELS;
+            CultureInfo inv = CultureInfo.InvariantCulture;
 
             int y = 6;
             int i;
             for (i = 0; i < keys.Length; i++)
             {
+                bool isAuto = _auto.ContainsKey(keys[i]);
+
                 Label lb = new Label();
-                lb.Text = labels[i];
+                lb.Text = isAuto ? (labels[i] + "   (auto)") : labels[i];
+                if (isAuto) { lb.ForeColor = Color.FromArgb(0, 110, 115); }
                 lb.SetBounds(4, y + 4, 210, 20);
                 _rowsPanel.Controls.Add(lb);
 
@@ -277,10 +432,30 @@ namespace Tekla.Technology.Akit.UserScript
                 tot.SetBounds(408, y, 60, 22);
                 _rowsPanel.Controls.Add(tot);
 
+                if (isAuto)
+                {
+                    double[] a = _auto[keys[i]];
+                    nud.Value = (decimal)a[0];
+                    if (a[1] >= 0.0) { done.Text = ((int)a[1]).ToString(inv); }
+                    if (a[2] >= 0.0) { tot.Text = ((int)a[2]).ToString(inv); }
+
+                    if (_autoNote.ContainsKey(keys[i]))
+                    {
+                        Label hint = new Label();
+                        hint.Text = _autoNote[keys[i]];
+                        hint.ForeColor = Color.Gray;
+                        hint.SetBounds(478, y + 4, 110, 20);
+                        hint.AutoEllipsis = true;
+                        _rowsPanel.Controls.Add(hint);
+                    }
+                }
+
                 _keys.Add(keys[i]);
                 _pcts.Add(nud);
                 _dones.Add(done);
                 _totals.Add(tot);
+                _autoFlags.Add(isAuto);
+                _autoSeed.Add(nud.Value);
 
                 y = y + 30;
             }
@@ -303,11 +478,20 @@ namespace Tekla.Technology.Akit.UserScript
                     // Skip rows left completely untouched.
                     if (pct == 0 && doneS.Length == 0 && totS.Length == 0) { continue; }
 
+                    // Untouched auto rows are reported as computed by the
+                    // macro; anything the designer changed becomes manual.
+                    bool stillAuto = _autoFlags[i] && _pcts[i].Value == _autoSeed[i];
+
                     if (acts.Length > 0) { acts.Append(","); }
                     acts.Append("\"").Append(_keys[i]).Append("\":{");
                     acts.Append("\"percent\":").Append(pct.ToString(inv));
                     if (doneS.Length > 0) { acts.Append(",\"done\":").Append(SafeInt(doneS)); }
                     if (totS.Length > 0) { acts.Append(",\"total\":").Append(SafeInt(totS)); }
+                    acts.Append(",\"source\":\"").Append(stillAuto ? "auto" : "manual").Append("\"");
+                    if (stillAuto && _autoNote.ContainsKey(_keys[i]))
+                    {
+                        acts.Append(",\"note\":\"").Append(Esc(_autoNote[_keys[i]])).Append("\"");
+                    }
                     acts.Append("}");
                     reported = reported + 1;
                 }
@@ -315,6 +499,11 @@ namespace Tekla.Technology.Akit.UserScript
                 if (reported == 0)
                 {
                     MessageBox.Show("Enter progress for at least one process.", "Daily Status");
+                    return;
+                }
+                if (_tbDesigner.Text.Trim().Length == 0)
+                {
+                    MessageBox.Show("Enter the designer name.", "Daily Status");
                     return;
                 }
 
@@ -326,6 +515,7 @@ namespace Tekla.Technology.Akit.UserScript
                 json.Append("\"reportType\":\"model_summary\",");
                 json.Append("\"workType\":\"").Append(_rbSteel.Checked ? "steel" : "rebar").Append("\",");
                 json.Append("\"workstation\":\"").Append(Esc(Environment.MachineName)).Append("\",");
+                json.Append("\"designer\":\"").Append(Esc(_tbDesigner.Text.Trim())).Append("\",");
                 json.Append("\"notes\":\"").Append(Esc(_tbNotes.Text)).Append("\",");
                 json.Append("\"metrics\":{");
                 json.Append("\"tonnage\":").Append(Math.Round(_tonnage, 2).ToString(inv)).Append(",");
@@ -344,7 +534,8 @@ namespace Tekla.Technology.Akit.UserScript
 
                 MarkPushedToday();
                 MessageBox.Show("Sent to West EPCM portal.\n\nProcesses reported: "
-                    + reported.ToString() + "\nProject: " + _projectNumber,
+                    + reported.ToString() + "\nProject: " + _projectNumber
+                    + "\nDesigner: " + _tbDesigner.Text.Trim(),
                     "Daily Status — OK");
                 _form.Close();
             }
