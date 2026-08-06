@@ -530,12 +530,29 @@ namespace Tekla.Technology.Akit.UserScript
                 client.Headers.Add("Content-Type", "application/json");
                 client.Headers.Add("X-Tekla-Api-Key", API_KEY);
                 client.Encoding = Encoding.UTF8;
-                client.UploadString(API_URL, "POST", json.ToString());
+                string reply = client.UploadString(API_URL, "POST", json.ToString());
+
+                // The server reports back how many processes it actually
+                // stored. If that is 0 while we sent some, the push landed
+                // on an out-of-date backend that dropped them — the designer
+                // should know now, not the COO three days later.
+                int stored = ReadStored(reply);
+                string warn = "";
+                if (stored == 0 && reported > 0)
+                {
+                    warn = "\n\nWARNING: the portal stored 0 processes."
+                         + "\nOnly model totals were saved. Tell your West EPCM"
+                         + "\nadministrator the backend needs updating, then"
+                         + "\npush again.";
+                }
 
                 MarkPushedToday();
                 MessageBox.Show("Sent to West EPCM portal.\n\nProcesses reported: "
-                    + reported.ToString() + "\nProject: " + _projectNumber
-                    + "\nDesigner: " + _tbDesigner.Text.Trim(),
+                    + reported.ToString()
+                    + (stored >= 0 ? "\nProcesses stored by portal: " + stored.ToString() : "")
+                    + "\nProject: " + _projectNumber
+                    + "\nDesigner: " + _tbDesigner.Text.Trim()
+                    + warn,
                     "Daily Status — OK");
                 _form.Close();
             }
@@ -557,6 +574,36 @@ namespace Tekla.Technology.Akit.UserScript
             {
                 MessageBox.Show("Error: " + ex.Message, "Daily Status — ERROR");
             }
+        }
+
+        // Pulls "activitiesStored":N out of the JSON reply without needing a
+        // parser. Returns -1 when the field is absent (older backend).
+        private static int ReadStored(string reply)
+        {
+            try
+            {
+                if (reply == null) { return -1; }
+                string tag = "\"activitiesStored\"";
+                int i = reply.IndexOf(tag);
+                if (i < 0) { return -1; }
+                i = reply.IndexOf(':', i + tag.Length);
+                if (i < 0) { return -1; }
+                i = i + 1;
+                StringBuilder digits = new StringBuilder();
+                while (i < reply.Length)
+                {
+                    char c = reply[i];
+                    if (c == ' ') { i = i + 1; continue; }
+                    if (c < '0' || c > '9') { break; }
+                    digits.Append(c);
+                    i = i + 1;
+                }
+                if (digits.Length == 0) { return -1; }
+                int v = 0;
+                if (!int.TryParse(digits.ToString(), out v)) { return -1; }
+                return v;
+            }
+            catch (Exception) { return -1; }
         }
 
         private static string SafeInt(string t)

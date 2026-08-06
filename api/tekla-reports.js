@@ -120,6 +120,17 @@ const ACTIVITY_KEYS = [
 ];
 const WORK_TYPES = ['steel', 'rebar'];
 
+// Advertised to the portal on every GET. Without this the portal cannot
+// tell "the deployed API is too old to store per-process figures" apart
+// from "this particular report was pushed before the API was updated" —
+// two problems with completely different fixes.
+const CAPABILITIES = {
+    apiVersion: 3,
+    activities: true,      // per-process percent / done / total accepted
+    activitySource: true,  // auto (computed by macro) vs manual (typed)
+    designerRollup: true   // per-designer push tracking in the summary
+};
+
 // Accepts either { detailing: {...}, drafting: {...} } or
 // [ { key:'detailing', ... }, ... ]. Unknown keys are ignored.
 function normalizeActivities(input) {
@@ -300,7 +311,14 @@ const handler = async (req, res) => {
                 });
             } catch (e) { console.warn('[tekla-reports] activity log failed:', e.message); }
 
-            return res.status(201).json({ success: true, data: { id: ref.id, ...doc, createdAt: new Date().toISOString() } });
+            // activitiesStored lets the macro confirm on screen that the
+            // server actually kept the per-process figures it just sent.
+            return res.status(201).json({
+                success: true,
+                activitiesStored: Object.keys(activities).length,
+                capabilities: CAPABILITIES,
+                data: { id: ref.id, ...doc, createdAt: new Date().toISOString() }
+            });
         }
 
         // ── PUT — set project plan targets (COO/Director ONLY) ─────────────
@@ -414,7 +432,7 @@ const handler = async (req, res) => {
                 pushedToday: reports.filter((r) => isToday(r.createdAt)).length
             };
 
-            return res.status(200).json({ success: true, data: { reports, models, summary, plans } });
+            return res.status(200).json({ success: true, data: { reports, models, summary, plans, capabilities: CAPABILITIES } });
         }
 
         // ── GET one report's detail rows via ?id= handled above by list; DELETE ──
