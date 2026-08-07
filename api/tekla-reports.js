@@ -307,11 +307,30 @@ function hoursModel(booked, progress, metrics, plan) {
 
     // >100% = more progress delivered than hours spent would suggest.
     const efficiency = (earned !== null && actual > 0) ? (earned / actual) * 100 : null;
-    // Hours this project will need in total if it carries on at today's rate.
-    const forecast = (pct !== null && pct > 0 && actual > 0) ? (actual / (pct / 100)) : null;
+
+    // Forecast = MODELED TONNAGE vs HOURS THE DESIGNERS ENTERED.
+    // The h/T rate actually being achieved (designer-entered hours ÷ tonnes
+    // modelled so far), projected over the full tonnage. Both inputs are
+    // real observations — timesheet hours and model tonnage — so the
+    // forecast never leans on a self-reported percentage. When designers
+    // have entered no hours there is nothing to project from; the response
+    // says so explicitly instead of leaving a silent null.
+    const hoursEntered = actual > 0;
+    let forecast = null;
+    let forecastBasis = null;
+    if (hoursEntered && modeledTonnage > 0 && basisTonnage > 0) {
+        forecast = (actual / modeledTonnage) * basisTonnage;
+        forecastBasis = 'tonnage'; // (entered hours ÷ modelled T) × total T
+    } else if (!hoursEntered) {
+        forecastBasis = 'no_hours_entered';
+    } else {
+        forecastBasis = 'no_tonnage';
+    }
 
     const r1 = (v) => (v === null || v === undefined ? null : Math.round(v * 10) / 10);
     return {
+        hoursEntered: hoursEntered,
+        forecastBasis: forecastBasis,
         hoursPerTonne: rate,
         hoursPerTonneIsDefault: !(num(p.hoursPerTonne) > 0),
         basisTonnage: r1(basisTonnage),
