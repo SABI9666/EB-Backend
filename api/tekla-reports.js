@@ -199,6 +199,162 @@ function planDocId(projectNumber) {
     return String(projectNumber || '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
 }
 
+// ── Working hours ──────────────────────────────────────────────────────
+// Hours come from the EXISTING timesheet system (collection `timesheets`),
+// not from the Tekla push — designers already book time there, so this
+// reports it against model progress instead of asking them to type it a
+// second time (two numbers for the same day would only ever disagree).
+//
+// The norm below converts tonnage into a budget. 12 h/T is a common
+// detailing figure; COO/Director override it per project in the plan.
+const DEFAULT_HOURS_PER_TONNE = 12;
+const MAX_PROJECT_LOOKUPS = 25;
+const MAX_TIMESHEET_ROWS = 5000;
+
+// Tekla writes "P-1529", the portal may hold "P1529" — compare on
+// letters and digits only so the two still meet.
+function matchKey(v) {
+    return String(v == null ? '' : v).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function toIso(v) {
+    if (!v) return null;
+    if (v.toDate) { try { return v.toDate().toISOString(); } catch (e) { return null; } }
+    if (v.seconds !== undefined) return new Date(v.seconds * 1000).toISOString();
+    if (v._seconds !== undefined) return new Date(v._seconds * 1000).toISOString();
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// projectNumber (as Tekla knows it) -> portal project doc.
+async function loadProjectIndex() {
+    const index = {};
+    const snap = await db.collection('projects').limit(1000).get();
+    const add = (value, doc, id) => {
+        const k = matchKey(value);
+        if (!k || index[k]) return;
+        index[k] = {
+            id: id,
+            projectName: s(doc.projectName),
+            projectNumber: s(doc.projectNumber || doc.projectCode),
+            allocatedHours: num(doc.allocatedHours)
+        };
+    };
+    // Number and code first so an exact identifier always wins over a name.
+    snap.docs.forEach((d) => { const p = d.data(); add(p.projectNumber, p, d.id); add(p.projectCode, p, d.id); });
+    snap.docs.forEach((d) => { const p = d.data(); add(p.projectName, p, d.id); });
+    return index;
+}
+
+// Booked hours for one project, with the per-designer split management
+// asks for first ("who spent the time?").
+async function loggedHoursFor(projectId) {
+    const snap = await db.collection('timesheets')
+        .where('projectId', '==', projectId)
+        .limit(MAX_TIMESHEET_ROWS)
+        .get();
+
+    let total = 0;
+    let lastEntry = null;
+    const by = {};
+    snap.docs.forEach((d) => {
+        const t = d.data();
+        const h = num(t.hours);
+        total += h;
+        const iso = toIso(t.date);
+        if (iso && (!lastEntry || iso > lastEntry)) lastEntry = iso;
+
+        const name = s(t.designerName).trim() || 'Unknown';
+        if (!by[name]) by[name] = { name: name, hours: 0, entries: 0, lastEntry: null };
+        by[name].hours += h;
+        by[name].entries += 1;
+        if (iso && (!by[name].lastEntry || iso > by[name].lastEntry)) by[name].lastEntry = iso;
+    });
+
+    const designers = Object.keys(by).map((k) => by[k]).sort((a, b) => b.hours - a.hours);
+    designers.forEach((d) => { d.hours = Math.round(d.hours * 10) / 10; });
+
+    return {
+        loggedHours: Math.round(total * 10) / 10,
+        entryCount: snap.size,
+        truncated: snap.size >= MAX_TIMESHEET_ROWS,
+        lastEntry: lastEntry,
+        designers: designers
+    };
+}
+
+// Earned-value view of the hours. Budget comes from tonnage; earned is
+// the share of that budget the reported progress has actually delivered.
+// Comparing EARNED against ACTUAL is what makes this honest — comparing
+// budget against actual only says how much is left, not whether the team
+// is ahead or behind for the work genuinely completed.
+function hoursModel(booked, progress, metrics, plan) {
+    const p = plan || {};
+    const m = metrics || {};
+    const pr = progress || {};
+
+    const rate = num(p.hoursPerTonne) > 0 ? num(p.hoursPerTonne) : DEFAULT_HOURS_PER_TONNE;
+    const modeledTonnage = num(m.tonnage);
+    // Budget on the CONTRACT tonnage when management has set it; fall back
+    // to what is modelled so far, which understates the budget early on.
+    const basisTonnage = num(p.plannedTonnage) > 0 ? num(p.plannedTonnage) : modeledTonnage;
+    const usingPlannedTonnage = num(p.plannedTonnage) > 0;
+
+    const actual = num(booked && booked.loggedHours);
+    const budget = basisTonnage > 0 ? basisTonnage * rate : null;
+    const pct = (pr.overallPercent === null || pr.overallPercent === undefined) ? null : num(pr.overallPercent);
+    const earned = (budget !== null && pct !== null) ? budget * (pct / 100) : null;
+
+    // >100% = more progress delivered than hours spent would suggest.
+    const efficiency = (earned !== null && actual > 0) ? (earned / actual) * 100 : null;
+
+    // Forecast = MODELED TONNAGE vs HOURS THE DESIGNERS ENTERED.
+    // The h/T rate actually being achieved (designer-entered hours ÷ tonnes
+    // modelled so far), projected over the full tonnage. Both inputs are
+    // real observations — timesheet hours and model tonnage — so the
+    // forecast never leans on a self-reported percentage. When designers
+    // have entered no hours there is nothing to project from; the response
+    // says so explicitly instead of leaving a silent null.
+    const hoursEntered = actual > 0;
+    let forecast = null;
+    let forecastBasis = null;
+    if (hoursEntered && modeledTonnage > 0 && basisTonnage > 0) {
+        forecast = (actual / modeledTonnage) * basisTonnage;
+        forecastBasis = 'tonnage'; // (entered hours ÷ modelled T) × total T
+    } else if (!hoursEntered) {
+        forecastBasis = 'no_hours_entered';
+    } else {
+        forecastBasis = 'no_tonnage';
+    }
+
+    const r1 = (v) => (v === null || v === undefined ? null : Math.round(v * 10) / 10);
+    return {
+        hoursEntered: hoursEntered,
+        forecastBasis: forecastBasis,
+        hoursPerTonne: rate,
+        hoursPerTonneIsDefault: !(num(p.hoursPerTonne) > 0),
+        basisTonnage: r1(basisTonnage),
+        usingPlannedTonnage: usingPlannedTonnage,
+        budgetHours: r1(budget),
+        earnedHours: r1(earned),
+        actualHours: r1(actual),
+        allocatedHours: r1(num(booked && booked.allocatedHours)),
+        remainingHours: (budget !== null) ? r1(Math.max(0, budget - actual)) : null,
+        // Positive = more hours burnt than the delivered progress earned.
+        varianceHours: (earned !== null) ? r1(actual - earned) : null,
+        efficiencyPercent: r1(efficiency),
+        forecastHours: r1(forecast),
+        // What a tonne is actually costing, vs the norm it was budgeted at.
+        actualHoursPerTonne: modeledTonnage > 0 ? r1(actual / modeledTonnage) : null,
+        entryCount: (booked && booked.entryCount) || 0,
+        truncated: !!(booked && booked.truncated),
+        lastEntry: (booked && booked.lastEntry) || null,
+        designers: (booked && booked.designers) || [],
+        matched: !!(booked && booked.matched),
+        projectId: (booked && booked.projectId) || null
+    };
+}
+
 const handler = async (req, res) => {
     try {
         // ── Auth: machine key OR logged-in user ────────────────────────────
@@ -337,6 +493,9 @@ const handler = async (req, res) => {
                 projectNumber: projectNumber,
                 plannedTonnage: num(b.plannedTonnage),
                 targetDrawings: int(b.targetDrawings),
+                // Hours the project is budgeted at per tonne of steel. 0 or
+                // blank falls back to DEFAULT_HOURS_PER_TONNE on read.
+                hoursPerTonne: Math.max(0, num(b.hoursPerTonne)),
                 notes: s(b.notes).slice(0, 500),
                 updatedBy: s(user.name || user.email),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -408,6 +567,43 @@ const handler = async (req, res) => {
                 if (!latestByModel[key]) latestByModel[key] = r; // list is newest-first
             });
             const models = Object.values(latestByModel);
+
+            // Latest report per PROJECT (models are per project+model) — this
+            // is what the hours are measured against.
+            const latestByProject = {};
+            reports.forEach((r) => {
+                const pn = s(r.projectNumber).trim();
+                if (pn && !latestByProject[pn]) latestByProject[pn] = r;
+            });
+
+            // Working hours booked against each project, matched to the
+            // portal's own timesheets. Never fatal: a failure here must not
+            // take the whole report down with it.
+            const hours = {};
+            try {
+                const wanted = Object.keys(latestByProject);
+                if (wanted.length) {
+                    const index = await loadProjectIndex();
+                    if (wanted.length > MAX_PROJECT_LOOKUPS) {
+                        console.warn(`[tekla-reports] hours limited to ${MAX_PROJECT_LOOKUPS} of ${wanted.length} projects`);
+                    }
+                    await Promise.all(wanted.slice(0, MAX_PROJECT_LOOKUPS).map(async (pn) => {
+                        const match = index[matchKey(pn)] || null;
+                        let booked = { loggedHours: 0, entryCount: 0, designers: [], matched: false };
+                        if (match) {
+                            booked = Object.assign({}, await loggedHoursFor(match.id), {
+                                matched: true, projectId: match.id, allocatedHours: match.allocatedHours
+                            });
+                        }
+                        const latest = latestByProject[pn];
+                        const h = hoursModel(booked, latest.progress, latest.metrics, planFor(pn));
+                        h.projectNumber = pn;
+                        h.projectName = match ? match.projectName : s(latest.projectName);
+                        hours[pn] = h;
+                    }));
+                }
+            } catch (e) { console.warn('[tekla-reports] hours read failed:', e.message); }
+
             const completions = models
                 .map((r) => r.progress && r.progress.overallPercent)
                 .filter((v) => v !== null && v !== undefined);
@@ -415,6 +611,21 @@ const handler = async (req, res) => {
                 (r.progress && r.progress.overallPercent !== null && r.progress.overallPercent < 100) ||
                 (r.pendingItems && r.pendingItems.length)
             ).length;
+            const hoursTotals = (() => {
+                const list = Object.keys(hours).map((k) => hours[k]);
+                const sum = (f) => list.reduce((t, h) => t + (num(h[f]) || 0), 0);
+                const actual = sum('actualHours');
+                const earned = sum('earnedHours');
+                const r1 = (v) => Math.round(v * 10) / 10;
+                return {
+                    actual: r1(actual),
+                    budget: r1(sum('budgetHours')),
+                    earned: r1(earned),
+                    efficiency: actual > 0 && earned > 0 ? r1((earned / actual) * 100) : null,
+                    unmatched: list.filter((h) => !h.matched).length
+                };
+            })();
+
             const summary = {
                 modelCount: models.length,
                 reportCount: reports.length,
@@ -429,10 +640,16 @@ const handler = async (req, res) => {
                 // Who pushed, and when they last did — lets management see at
                 // a glance which designers reported today and which are stale.
                 designers: designerRollup(reports),
-                pushedToday: reports.filter((r) => isToday(r.createdAt)).length
+                pushedToday: reports.filter((r) => isToday(r.createdAt)).length,
+                // Portfolio hours across every project with Tekla data
+                totalLoggedHours: hoursTotals.actual,
+                totalBudgetHours: hoursTotals.budget,
+                totalEarnedHours: hoursTotals.earned,
+                hoursEfficiencyPercent: hoursTotals.efficiency,
+                projectsWithoutTimesheetMatch: hoursTotals.unmatched
             };
 
-            return res.status(200).json({ success: true, data: { reports, models, summary, plans, capabilities: CAPABILITIES } });
+            return res.status(200).json({ success: true, data: { reports, models, summary, plans, hours, capabilities: CAPABILITIES } });
         }
 
         // ── GET one report's detail rows via ?id= handled above by list; DELETE ──

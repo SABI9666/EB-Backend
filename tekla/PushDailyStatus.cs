@@ -61,6 +61,20 @@ namespace Tekla.Technology.Akit.UserScript
         // Set true to always show the dialog, even if already pushed today.
         private const bool FORCE_ALWAYS_SHOW = true;
 
+        // "Remind me later" re-opens the dialog after this many minutes,
+        // and keeps doing so until the day's push is made. The timer lives
+        // on Tekla's UI thread, so it survives the dialog closing but dies
+        // with Tekla itself — it can never nag outside the application.
+        private const int REMIND_MINUTES = 5;
+        private static Timer _remindTimer;
+
+        // West EPCM palette (matches the portal)
+        private static Color CLR_DARK = Color.FromArgb(15, 23, 42);
+        private static Color CLR_ACCENT = Color.FromArgb(14, 158, 209);
+        private static Color CLR_TEAL = Color.FromArgb(0, 110, 115);
+        private static Color CLR_BG = Color.FromArgb(245, 248, 251);
+        private static Color CLR_MUTED = Color.FromArgb(100, 116, 139);
+
         // Activity rows. Key must match the portal: modeling, connection,
         // detailing, drafting, checking, revisions, nc, ifc, bbs.
         private static string[] STEEL_KEYS   = { "modeling", "connection", "detailing", "drafting", "checking", "revisions", "nc", "ifc" };
@@ -132,6 +146,11 @@ namespace Tekla.Technology.Akit.UserScript
         // ── Read live model figures (auto-filled, not typed by the user) ──
         private static void ReadModel(Model model)
         {
+            // Statics survive between macro runs inside one Tekla session —
+            // without this reset a second run would double-count everything.
+            _tonnage = 0.0; _parts = 0; _assemblies = 0; _partsNumbered = 0;
+            _plannedTonnage = 0.0; _dgFiles = 0; _ncFiles = 0;
+
             ModelObjectEnumerator objects = model.GetModelObjectSelector().GetAllObjects();
             while (objects.MoveNext())
             {
@@ -291,101 +310,205 @@ namespace Tekla.Technology.Akit.UserScript
         private static void ShowDialog()
         {
             _form = new Form();
-            _form.Text = "West EPCM — Daily Status Push";
-            _form.Width = 640;
-            _form.Height = 620;
+            _form.Text = "West EPCM Technologies — Daily Status";
+            _form.Width = 660;
+            _form.Height = 700;
             _form.StartPosition = FormStartPosition.CenterScreen;
             _form.FormBorderStyle = FormBorderStyle.FixedDialog;
             _form.MaximizeBox = false;
             _form.MinimizeBox = false;
+            _form.BackColor = Color.White;
+            _form.Font = new Font("Segoe UI", 9f);
 
-            Label head = new Label();
-            head.Text = "Daily progress — " + _projectNumber + "  |  " + _modelName;
-            head.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
-            head.SetBounds(14, 12, 600, 22);
-            _form.Controls.Add(head);
+            // ── Branded header band ─────────────────────────────────────
+            Panel band = new Panel();
+            band.BackColor = CLR_DARK;
+            band.SetBounds(0, 0, 660, 78);
+            _form.Controls.Add(band);
 
+            Label logo = new Label();
+            logo.Text = "W";
+            logo.Font = new Font("Segoe UI", 16f, FontStyle.Bold);
+            logo.ForeColor = Color.White;
+            logo.BackColor = CLR_ACCENT;
+            logo.TextAlign = ContentAlignment.MiddleCenter;
+            logo.SetBounds(16, 16, 44, 44);
+            band.Controls.Add(logo);
+
+            Label brand = new Label();
+            brand.Text = "West EPCM Technologies";
+            brand.Font = new Font("Segoe UI", 12f, FontStyle.Bold);
+            brand.ForeColor = Color.White;
+            brand.BackColor = CLR_DARK;
+            brand.SetBounds(72, 16, 400, 24);
+            band.Controls.Add(brand);
+
+            Label sub = new Label();
+            sub.Text = "Daily Status Push — " + _projectNumber + "  |  " + _modelName;
+            sub.Font = new Font("Segoe UI", 8.5f);
+            sub.ForeColor = Color.FromArgb(148, 163, 184);
+            sub.BackColor = CLR_DARK;
+            sub.SetBounds(72, 42, 560, 18);
+            band.Controls.Add(sub);
+
+            // ── Model figures strip ─────────────────────────────────────
             _lblInfo = new Label();
-            _lblInfo.Text = "From model: " + Math.Round(_tonnage, 2).ToString(CultureInfo.InvariantCulture)
-                + " T | " + _parts.ToString() + " parts (" + _partsNumbered.ToString() + " numbered) | "
-                + _assemblies.ToString() + " assemblies | " + _dgFiles.ToString() + " drawings | "
+            _lblInfo.Text = "  MODEL   " + Math.Round(_tonnage, 2).ToString(CultureInfo.InvariantCulture)
+                + " T   ·   " + _parts.ToString() + " parts (" + _partsNumbered.ToString() + " numbered)   ·   "
+                + _assemblies.ToString() + " assemblies   ·   " + _dgFiles.ToString() + " drawings   ·   "
                 + _ncFiles.ToString() + " NC files";
-            _lblInfo.ForeColor = Color.DimGray;
-            _lblInfo.SetBounds(14, 34, 600, 18);
+            _lblInfo.BackColor = CLR_BG;
+            _lblInfo.ForeColor = CLR_MUTED;
+            _lblInfo.Font = new Font("Segoe UI", 8.25f, FontStyle.Bold);
+            _lblInfo.TextAlign = ContentAlignment.MiddleLeft;
+            _lblInfo.SetBounds(0, 78, 660, 28);
             _form.Controls.Add(_lblInfo);
 
+            // ── Work type + designer ────────────────────────────────────
             GroupBox gb = new GroupBox();
             gb.Text = "Work type";
-            gb.SetBounds(14, 58, 300, 50);
+            gb.ForeColor = CLR_MUTED;
+            gb.SetBounds(16, 116, 290, 52);
             _rbSteel = new RadioButton();
             _rbSteel.Text = "Steel";
             _rbSteel.Checked = true;
-            _rbSteel.SetBounds(14, 18, 70, 22);
+            _rbSteel.ForeColor = CLR_DARK;
+            _rbSteel.SetBounds(14, 20, 70, 22);
             _rbSteel.CheckedChanged += new EventHandler(OnTypeChanged);
             _rbRebar = new RadioButton();
             _rbRebar.Text = "Rebar";
-            _rbRebar.SetBounds(96, 18, 70, 22);
+            _rbRebar.ForeColor = CLR_DARK;
+            _rbRebar.SetBounds(96, 20, 70, 22);
             gb.Controls.Add(_rbSteel);
             gb.Controls.Add(_rbRebar);
             _form.Controls.Add(gb);
 
-            Label hdr = new Label();
-            hdr.Text = "Process                                   % complete      done / total";
-            hdr.ForeColor = Color.DimGray;
-            hdr.SetBounds(16, 112, 600, 18);
-            _form.Controls.Add(hdr);
-
-            Label legend = new Label();
-            legend.Text = "Rows marked (auto) are calculated from the model — change only if wrong.";
-            legend.ForeColor = Color.FromArgb(0, 110, 115);
-            legend.SetBounds(16, 130, 600, 18);
-            _form.Controls.Add(legend);
-
-            _rowsPanel = new Panel();
-            _rowsPanel.SetBounds(14, 150, 600, 286);
-            _rowsPanel.AutoScroll = true;
-            _form.Controls.Add(_rowsPanel);
-
             Label dl = new Label();
-            dl.Text = "Designer";
-            dl.SetBounds(330, 74, 60, 18);
+            dl.Text = "DESIGNER";
+            dl.Font = new Font("Segoe UI", 7.5f, FontStyle.Bold);
+            dl.ForeColor = CLR_MUTED;
+            dl.SetBounds(330, 118, 90, 16);
             _form.Controls.Add(dl);
 
             _tbDesigner = new TextBox();
             // Pre-filled with the signed-in Windows user so each designer's
             // push is attributed to them; editable for shared workstations.
             _tbDesigner.Text = Environment.UserName;
-            _tbDesigner.SetBounds(330, 94, 284, 22);
+            _tbDesigner.Font = new Font("Segoe UI", 9.5f);
+            _tbDesigner.SetBounds(330, 136, 296, 26);
             _form.Controls.Add(_tbDesigner);
 
+            // ── Process rows ────────────────────────────────────────────
+            Label hdr = new Label();
+            hdr.Text = "PROCESS                                              % COMPLETE          DONE / TOTAL";
+            hdr.Font = new Font("Segoe UI", 7.5f, FontStyle.Bold);
+            hdr.ForeColor = CLR_MUTED;
+            hdr.SetBounds(18, 178, 600, 16);
+            _form.Controls.Add(hdr);
+
+            Label legend = new Label();
+            legend.Text = "Rows marked ● auto are calculated from the model — change only if wrong.";
+            legend.Font = new Font("Segoe UI", 8f);
+            legend.ForeColor = CLR_TEAL;
+            legend.SetBounds(18, 194, 600, 16);
+            _form.Controls.Add(legend);
+
+            _rowsPanel = new Panel();
+            _rowsPanel.SetBounds(16, 214, 612, 290);
+            _rowsPanel.AutoScroll = true;
+            _rowsPanel.BackColor = Color.White;
+            _form.Controls.Add(_rowsPanel);
+
+            // ── Notes + actions ─────────────────────────────────────────
             Label nl = new Label();
-            nl.Text = "Notes / blockers (optional)";
-            nl.SetBounds(14, 442, 300, 18);
+            nl.Text = "NOTES / BLOCKERS (OPTIONAL)";
+            nl.Font = new Font("Segoe UI", 7.5f, FontStyle.Bold);
+            nl.ForeColor = CLR_MUTED;
+            nl.SetBounds(16, 512, 300, 16);
             _form.Controls.Add(nl);
 
             _tbNotes = new TextBox();
             _tbNotes.Multiline = true;
-            _tbNotes.SetBounds(14, 462, 600, 50);
+            _tbNotes.SetBounds(16, 530, 612, 52);
             _form.Controls.Add(_tbNotes);
 
             Button ok = new Button();
             ok.Text = "Push to West EPCM";
-            ok.SetBounds(400, 524, 214, 34);
+            ok.FlatStyle = FlatStyle.Flat;
+            ok.FlatAppearance.BorderSize = 0;
+            ok.BackColor = CLR_ACCENT;
+            ok.ForeColor = Color.White;
+            ok.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+            ok.SetBounds(414, 596, 214, 38);
             ok.Click += new EventHandler(OnPush);
             _form.Controls.Add(ok);
 
             Button later = new Button();
-            later.Text = "Remind me later";
-            later.SetBounds(270, 524, 120, 34);
+            later.Text = "Remind me in " + REMIND_MINUTES.ToString() + " min";
+            later.FlatStyle = FlatStyle.Flat;
+            later.FlatAppearance.BorderColor = Color.FromArgb(203, 213, 225);
+            later.BackColor = Color.White;
+            later.ForeColor = CLR_MUTED;
+            later.SetBounds(266, 596, 136, 38);
             later.Click += new EventHandler(OnLater);
             _form.Controls.Add(later);
+
+            Label remindNote = new Label();
+            remindNote.Text = AlreadyPushedToday()
+                ? "Already pushed today — pushing again just updates the figures."
+                : "Not pushed today. \"Remind me\" will re-open this every " + REMIND_MINUTES.ToString() + " minutes until you push.";
+            remindNote.Font = new Font("Segoe UI", 7.75f);
+            remindNote.ForeColor = CLR_MUTED;
+            remindNote.SetBounds(18, 640, 610, 16);
+            _form.Controls.Add(remindNote);
 
             BuildRows();
             _form.ShowDialog();
         }
 
         private static void OnTypeChanged(object sender, EventArgs e) { BuildRows(); }
-        private static void OnLater(object sender, EventArgs e) { _form.Close(); }
+
+        // "Remind me later": close now, come back in REMIND_MINUTES — but
+        // only if today's push still hasn't happened by then.
+        private static void OnLater(object sender, EventArgs e)
+        {
+            StartReminder();
+            _form.Close();
+        }
+
+        private static void StartReminder()
+        {
+            try
+            {
+                if (_remindTimer == null)
+                {
+                    _remindTimer = new Timer();
+                    _remindTimer.Tick += new EventHandler(OnRemindTick);
+                }
+                _remindTimer.Interval = REMIND_MINUTES * 60 * 1000;
+                _remindTimer.Stop();
+                _remindTimer.Start();
+            }
+            catch (Exception) { }
+        }
+
+        private static void StopReminder()
+        {
+            try { if (_remindTimer != null) { _remindTimer.Stop(); } }
+            catch (Exception) { }
+        }
+
+        private static void OnRemindTick(object sender, EventArgs e)
+        {
+            try
+            {
+                _remindTimer.Stop();
+                if (AlreadyPushedToday()) { return; }         // job done — stand down
+                if (_form != null && _form.Visible) { StartReminder(); return; } // already open
+                ShowDialog();
+            }
+            catch (Exception) { }
+        }
 
         private static void BuildRows()
         {
@@ -404,8 +527,9 @@ namespace Tekla.Technology.Akit.UserScript
                 bool isAuto = _auto.ContainsKey(keys[i]);
 
                 Label lb = new Label();
-                lb.Text = isAuto ? (labels[i] + "   (auto)") : labels[i];
-                if (isAuto) { lb.ForeColor = Color.FromArgb(0, 110, 115); }
+                lb.Text = isAuto ? (labels[i] + "  ● auto") : labels[i];
+                lb.ForeColor = isAuto ? CLR_TEAL : CLR_DARK;
+                if (isAuto) { lb.Font = new Font("Segoe UI", 9f, FontStyle.Bold); }
                 lb.SetBounds(4, y + 4, 210, 20);
                 _rowsPanel.Controls.Add(lb);
 
@@ -547,6 +671,7 @@ namespace Tekla.Technology.Akit.UserScript
                 }
 
                 MarkPushedToday();
+                StopReminder();
                 MessageBox.Show("Sent to West EPCM portal.\n\nProcesses reported: "
                     + reported.ToString()
                     + (stored >= 0 ? "\nProcesses stored by portal: " + stored.ToString() : "")
