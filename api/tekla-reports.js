@@ -358,8 +358,22 @@ function hoursModel(booked, progress, metrics, plan) {
 const handler = async (req, res) => {
     try {
         // ── Auth: machine key OR logged-in user ────────────────────────────
-        const machineKey = s(req.headers['x-tekla-api-key']);
-        const isMachine = !!(machineKey && process.env.TEKLA_API_KEY && machineKey === process.env.TEKLA_API_KEY);
+        // Keys are compared trimmed: a stray space or newline pasted into
+        // the macro (or into the Cloud Run variable) must not break auth.
+        const machineKey = s(req.headers['x-tekla-api-key']).trim();
+        const serverKey = s(process.env.TEKLA_API_KEY).trim();
+        const isMachine = !!(machineKey && serverKey && machineKey === serverKey);
+
+        // A workstation that SENT a key but failed the match must get a
+        // precise answer, not fall through to the portal login check whose
+        // "No authorization token provided" points everyone the wrong way.
+        if (machineKey && !isMachine) {
+            const reason = !serverKey
+                ? 'The server has no TEKLA_API_KEY configured. Add the TEKLA_API_KEY variable to the west-epcm-backend Cloud Run service (Edit & deploy new revision → Variables & Secrets) and deploy.'
+                : 'The Tekla API key sent by this workstation does not match the key on the server. Re-open PushDailyStatus.cs and redo STEP 2 of the install guide — paste the full key with no extra spaces.';
+            console.warn(`[tekla-reports] machine key rejected (serverKeySet=${!!serverKey}, sentKeyLen=${machineKey.length})`);
+            return res.status(403).json({ success: false, error: reason });
+        }
 
         let user = null;
         if (!isMachine) {
