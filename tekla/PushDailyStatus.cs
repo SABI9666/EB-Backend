@@ -651,8 +651,25 @@ namespace Tekla.Technology.Akit.UserScript
 
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
                 WebClient client = new WebClient();
+                // Catch a key that was never pasted in BEFORE going to the
+                // network — the server can only answer "unauthorized", but
+                // here we can say exactly what to fix.
+                string key = API_KEY.Trim();
+                if (key.Length == 0 || key == "PASTE_TEKLA_API_KEY_HERE")
+                {
+                    MessageBox.Show(
+                        "The API key has not been set on this workstation.\n\n"
+                        + "Open this file in Notepad:\n"
+                        + "  PushDailyStatus.cs  (in the Tekla macros folder)\n\n"
+                        + "and replace PASTE_TEKLA_API_KEY_HERE with the key\n"
+                        + "from your West EPCM administrator (STEP 2 of the\n"
+                        + "install guide). Then restart Tekla and push again.",
+                        "Daily Status — API key missing");
+                    return;
+                }
+
                 client.Headers.Add("Content-Type", "application/json");
-                client.Headers.Add("X-Tekla-Api-Key", API_KEY);
+                client.Headers.Add("X-Tekla-Api-Key", key);
                 client.Encoding = Encoding.UTF8;
                 string reply = client.UploadString(API_URL, "POST", json.ToString());
 
