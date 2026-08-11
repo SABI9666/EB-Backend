@@ -58,10 +58,16 @@ app.use((req, res, next) => {
 
 app.get('/health', (req, res) => {
     const admin = require('./api/_firebase-admin');
+    const firebaseUp = admin.apps.length > 0;
     res.json({
-        status: 'OK',
+        status: firebaseUp ? 'OK' : 'DEGRADED',
         message: 'Backend running',
-        firebase: admin.apps.length > 0 ? 'Connected' : 'Not initialized',
+        // When init failed, say WHY right here — this page is the first
+        // thing anyone checks when the portals show offline.
+        firebase: firebaseUp
+            ? 'Connected'
+            : 'NOT INITIALIZED: ' + (admin.__initError || 'no credentials found') +
+              ' — check FIREBASE_SERVICE_ACCOUNT_KEY_BASE64 on the Cloud Run service',
         timestamp: new Date().toISOString(),
         cors: 'Enabled'
     });

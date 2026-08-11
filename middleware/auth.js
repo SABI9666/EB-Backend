@@ -1,9 +1,28 @@
 // middleware/auth.js - Enhanced version with specific role validations
 const admin = require('../api/_firebase-admin');
-const db = admin.firestore();
+
+// Firestore is fetched LAZILY. Calling admin.firestore() at require time
+// kills the whole process when Firebase failed to initialize (bad or
+// missing credentials) — Cloud Run then crash-loops and every portal
+// shows "offline" with nothing in /health to say why. Deferring the call
+// lets the server boot, /health report the real cause, and each request
+// fail with an explanation instead of a dead service.
+let _db = null;
+function db() {
+  if (!_db) _db = admin.firestore();
+  return _db;
+}
 
 async function verifyToken(req, res, next) {
   try {
+    if (!admin.apps.length) {
+      return res.status(503).json({
+        success: false,
+        error: 'Firebase is not configured on the server: ' +
+          (admin.__initError || 'no credentials found') +
+          '. Check the FIREBASE_SERVICE_ACCOUNT_KEY_BASE64 variable on the Cloud Run service.'
+      });
+    }
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ success: false, error: 'No authorization token provided' });
@@ -18,7 +37,7 @@ async function verifyToken(req, res, next) {
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     
     // Fetch the user's role from your 'users' collection in Firestore
-    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+    const userDoc = await db().collection('users').doc(decodedToken.uid).get();
     if (!userDoc.exists) {
         return res.status(404).json({ success: false, error: 'User data not found.' });
     }
@@ -92,7 +111,7 @@ async function checkProjectAccess(req, res, next) {
             return next(); // No project specified, continue
         }
         
-        const projectDoc = await db.collection('projects').doc(projectId).get();
+        const projectDoc = await db().collection('projects').doc(projectId).get();
         if (!projectDoc.exists) {
             return res.status(404).json({ success: false, error: 'Project not found' });
         }
@@ -162,7 +181,7 @@ async function checkProposalAccess(req, res, next) {
             return next(); // No proposal or not BDM, continue
         }
         
-        const proposalDoc = await db.collection('proposals').doc(proposalId).get();
+        const proposalDoc = await db().collection('proposals').doc(proposalId).get();
         if (!proposalDoc.exists) {
             return res.status(404).json({ success: false, error: 'Proposal not found' });
         }

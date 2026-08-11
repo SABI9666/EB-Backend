@@ -65,9 +65,10 @@ if (!admin.apps.length) {
   } catch (error) {
     console.error('Firebase admin initialization error:', error.message);
     console.error('Stack:', error.stack);
-    
+
     // Don't throw - let the app start but log the error
     // This allows health checks to report degraded status
+    admin.__initError = error.message;
   }
 }
 
