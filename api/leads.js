@@ -73,6 +73,7 @@ function shape(id, data) {
         leadName: s(data.leadName),
         country: s(data.country),
         company: s(data.company),
+        phone: s(data.phone),
         workProfile: s(data.workProfile),
         remarks: s(data.remarks),
         status: STATUSES.includes(s(data.status)) ? s(data.status) : 'new',
@@ -149,6 +150,7 @@ const handler = async (req, res) => {
                 leadName: leadName,
                 country: s(b.country).trim().slice(0, 80),
                 company: s(b.company).trim().slice(0, 160),
+                phone: s(b.phone).trim().slice(0, 40),
                 workProfile: WORK_PROFILES.includes(s(b.workProfile)) ? s(b.workProfile) : s(b.workProfile).trim().slice(0, 80),
                 remarks: s(b.remarks).trim().slice(0, 2000),
                 status: 'new',
@@ -185,6 +187,7 @@ const handler = async (req, res) => {
             }
             if (b.country !== undefined) up.country = s(b.country).trim().slice(0, 80);
             if (b.company !== undefined) up.company = s(b.company).trim().slice(0, 160);
+            if (b.phone !== undefined) up.phone = s(b.phone).trim().slice(0, 40);
             if (b.workProfile !== undefined) up.workProfile = s(b.workProfile).trim().slice(0, 80);
             if (b.remarks !== undefined) up.remarks = s(b.remarks).trim().slice(0, 2000);
             if (b.status !== undefined && STATUSES.includes(s(b.status))) up.status = s(b.status);
