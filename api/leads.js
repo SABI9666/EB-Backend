@@ -13,8 +13,46 @@
 const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
+const multer = require('multer');
 
 const db = admin.firestore();
+const bucket = admin.storage().bucket();
+
+// Optional spreadsheet attached to a lead (client list, enquiry sheet…).
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const ok = [
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'text/csv', 'application/pdf'
+        ];
+        if (ok.includes(file.mimetype)) cb(null, true);
+        else cb(new Error('Only Excel (.xls/.xlsx), CSV or PDF files are allowed'));
+    }
+});
+
+// Accepts only http(s) links so javascript: URLs can never reach the UI.
+function cleanLink(v) {
+    const t = s(v).trim().slice(0, 500);
+    if (!t) return '';
+    return /^https?:\/\//i.test(t) ? t : '';
+}
+
+async function saveLeadFile(file, uid) {
+    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = `bdm-leads/${uid}/${Date.now()}-${safe}`;
+    const ref = bucket.file(path);
+    await ref.save(file.buffer, { contentType: file.mimetype, metadata: { contentType: file.mimetype } });
+    await ref.makePublic().catch((e) => console.log('[leads] file not public:', e.message));
+    return {
+        fileUrl: `https://storage.googleapis.com/${bucket.name}/${path}`,
+        fileName: file.originalname.slice(0, 200),
+        fileStoragePath: path,
+        fileSize: file.size
+    };
+}
 
 const allowCors = (fn) => async (req, res) => {
     res.setHeader('Access-Control-Allow-Credentials', true);
@@ -76,6 +114,10 @@ function shape(id, data) {
         phone: s(data.phone),
         workProfile: s(data.workProfile),
         remarks: s(data.remarks),
+        shareLink: cleanLink(data.shareLink),
+        fileUrl: s(data.fileUrl),
+        fileName: s(data.fileName),
+        fileSize: data.fileSize ? int(data.fileSize) : 0,
         status: STATUSES.includes(s(data.status)) ? s(data.status) : 'new',
         followUpWeeks: int(data.followUpWeeks),
         followUpAt: followUpAt,
@@ -89,7 +131,7 @@ function shape(id, data) {
     };
 }
 
-const handler = async (req, res) => {
+const inner = async (req, res) => {
     try {
         await util.promisify(verifyToken)(req, res);
         const role = String(req.user.role || '').toLowerCase();
@@ -153,6 +195,7 @@ const handler = async (req, res) => {
                 phone: s(b.phone).trim().slice(0, 40),
                 workProfile: WORK_PROFILES.includes(s(b.workProfile)) ? s(b.workProfile) : s(b.workProfile).trim().slice(0, 80),
                 remarks: s(b.remarks).trim().slice(0, 2000),
+                shareLink: cleanLink(b.shareLink),
                 status: 'new',
                 followUpWeeks: weeks,
                 followUpAt: followUpDateFor(weeks),
@@ -162,8 +205,11 @@ const handler = async (req, res) => {
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             };
+            if (req.file) {
+                Object.assign(doc, await saveLeadFile(req.file, uid));
+            }
             const ref = await db.collection('bdm_leads').add(doc);
-            console.log(`[leads] created ${ref.id} "${leadName}" by ${name} followUpWeeks=${weeks}`);
+            console.log(`[leads] created ${ref.id} "${leadName}" by ${name} followUpWeeks=${weeks} file=${!!req.file}`);
             return res.status(201).json({ success: true, data: shape(ref.id, { ...doc, createdAt: new Date(), updatedAt: new Date() }) });
         }
 
@@ -190,6 +236,12 @@ const handler = async (req, res) => {
             if (b.phone !== undefined) up.phone = s(b.phone).trim().slice(0, 40);
             if (b.workProfile !== undefined) up.workProfile = s(b.workProfile).trim().slice(0, 80);
             if (b.remarks !== undefined) up.remarks = s(b.remarks).trim().slice(0, 2000);
+            if (b.shareLink !== undefined) up.shareLink = cleanLink(b.shareLink);
+            if (req.file) {
+                Object.assign(up, await saveLeadFile(req.file, snap.data().createdByUid || uid));
+                const old = s(snap.data().fileStoragePath);
+                if (old) { try { await bucket.file(old).delete(); } catch (e) { /* replaced file already gone */ } }
+            }
             if (b.status !== undefined && STATUSES.includes(s(b.status))) up.status = s(b.status);
 
             // Setting a new follow-up restarts the clock from today and
@@ -218,6 +270,8 @@ const handler = async (req, res) => {
             if (!isMgmt && snap.data().createdByUid !== uid) {
                 return res.status(403).json({ success: false, error: 'You can only delete your own leads' });
             }
+            const oldPath = s(snap.data().fileStoragePath);
+            if (oldPath) { try { await bucket.file(oldPath).delete(); } catch (e) { /* already gone */ } }
             await ref.delete();
             console.log(`[leads] deleted ${id} by ${name}`);
             return res.status(200).json({ success: true });
@@ -230,6 +284,19 @@ const handler = async (req, res) => {
             return res.status(500).json({ success: false, error: error.message });
         }
     }
+};
+
+// Multipart (file attached) goes through multer first; plain JSON goes
+// straight in. Multer also parses the text fields into req.body.
+const handler = (req, res) => {
+    const ct = s(req.headers['content-type']);
+    if ((req.method === 'POST' || req.method === 'PUT') && ct.indexOf('multipart/form-data') !== -1) {
+        return upload.single('leadFile')(req, res, (err) => {
+            if (err) return res.status(400).json({ success: false, error: err.message });
+            return inner(req, res);
+        });
+    }
+    return inner(req, res);
 };
 
 module.exports = allowCors(handler);
