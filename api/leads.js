@@ -33,6 +33,14 @@ const upload = multer({
     }
 });
 
+// Loose e-mail check: enough to catch typos without rejecting valid
+// unusual addresses; stored lowercase.
+function cleanEmail(v) {
+    const t = s(v).trim().toLowerCase().slice(0, 160);
+    if (!t) return '';
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t) ? t : '';
+}
+
 // Accepts only http(s) links so javascript: URLs can never reach the UI.
 function cleanLink(v) {
     const t = s(v).trim().slice(0, 500);
@@ -112,6 +120,7 @@ function shape(id, data) {
         country: s(data.country),
         company: s(data.company),
         phone: s(data.phone),
+        email: cleanEmail(data.email),
         workProfile: s(data.workProfile),
         remarks: s(data.remarks),
         shareLink: cleanLink(data.shareLink),
@@ -193,6 +202,7 @@ const inner = async (req, res) => {
                 country: s(b.country).trim().slice(0, 80),
                 company: s(b.company).trim().slice(0, 160),
                 phone: s(b.phone).trim().slice(0, 40),
+                email: cleanEmail(b.email),
                 workProfile: WORK_PROFILES.includes(s(b.workProfile)) ? s(b.workProfile) : s(b.workProfile).trim().slice(0, 80),
                 remarks: s(b.remarks).trim().slice(0, 2000),
                 shareLink: cleanLink(b.shareLink),
@@ -234,6 +244,7 @@ const inner = async (req, res) => {
             if (b.country !== undefined) up.country = s(b.country).trim().slice(0, 80);
             if (b.company !== undefined) up.company = s(b.company).trim().slice(0, 160);
             if (b.phone !== undefined) up.phone = s(b.phone).trim().slice(0, 40);
+            if (b.email !== undefined) up.email = cleanEmail(b.email);
             if (b.workProfile !== undefined) up.workProfile = s(b.workProfile).trim().slice(0, 80);
             if (b.remarks !== undefined) up.remarks = s(b.remarks).trim().slice(0, 2000);
             if (b.shareLink !== undefined) up.shareLink = cleanLink(b.shareLink);
