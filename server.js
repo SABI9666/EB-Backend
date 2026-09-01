@@ -156,6 +156,8 @@ try {
     const teklaReportsHandler = require('./api/tekla-reports');
     console.log('  Loading leads...');
     const leadsHandler = require('./api/leads');
+    console.log('  Loading sample-projects...');
+    const sampleProjectsHandler = require('./api/sample-projects');
 
     console.log('✅ All handlers loaded successfully');
     console.log('🔗 Registering routes...');
@@ -191,6 +193,7 @@ try {
     app.use('/api/petty-cash', pettyCashHandler);
     app.use('/api/tekla-reports', teklaReportsHandler);
     app.use('/api/leads', leadsHandler);
+    app.use('/api/sample-projects', sampleProjectsHandler);
 
     console.log('✅ All routes registered');
 } catch (error) {
