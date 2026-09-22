@@ -62,6 +62,21 @@ async function verifyToken(req, res, next) {
       resolvedRole = 'design_lead';
     }
 
+    // Purchase access is bound to authenticated, verified email identities.
+    const purchaseEmails = ['anwar@edanbrook.in', 'anwar1@edanbrook.in'];
+    if (purchaseEmails.includes(userEmail)) {
+      if (!decodedToken.email_verified) {
+        return res.status(403).json({ success: false, error: 'Verify your email before accessing the Purchase portal.' });
+      }
+      resolvedRole = 'purchase';
+    } else if (resolvedRole === 'purchase') {
+      return res.status(403).json({ success: false, error: 'This account is not authorized for the Purchase portal.' });
+    }
+    // Keep Purchase identities out of APIs whose legacy handlers accept any role.
+    if (resolvedRole === 'purchase' && !/^\/api\/purchases(?:\/|\?|$)/.test(req.originalUrl)) {
+      return res.status(403).json({ success: false, error: 'Purchase accounts can only access purchase management.' });
+    }
+
     // Attach user data to the request object for use in other APIs
     req.user = {
       uid: decodedToken.uid,
