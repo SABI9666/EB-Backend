@@ -8,7 +8,7 @@ const admin = require('./_firebase-admin');
 const { verifyToken, requireRole } = require('../middleware/auth');
 const router = express.Router();
 const STAGES = ['rfq', 'quote', 'compare', 'approval', 'po', 'delivery', 'match', 'payment', 'closed'];
-const TYPES = ['requirement', 'quotation', 'approval', 'po', 'delivery', 'invoice', 'receipt', 'other'];
+const TYPES = ['requirement', 'quotation', 'comparison', 'approval', 'po', 'delivery', 'invoice', 'receipt', 'other'];
 const db = () => admin.firestore();
 const collection = () => db().collection('purchases');
 const fail = (status, message) => Object.assign(new Error(message), { status });
@@ -35,6 +35,23 @@ function fields(body) {
     out.priority = body.priority;
     return out;
 }
+// The live record is unchanged while a proposed operation awaits a decision.
+function checkRecord(snap, version) {
+    if (!snap.exists || snap.data().deletedAt) throw fail(404, 'Purchase not found');
+    const record = snap.data();
+    if (version !== record.version) throw fail(409, 'This purchase changed. Refresh and try again.');
+    return record;
+}
+function queueChange(tx, ref, record, req, change) {
+    if (record.approval?.status === 'pending') throw fail(409, 'An operation is already awaiting approval.');
+    const at = new Date().toISOString();
+    tx.update(ref, {
+        pendingChange: { ...change, previousApproval: record.approval || { status: 'draft' } },
+        approval: { status: 'pending', kind: change.kind, submittedBy: actor(req), submittedAt: at },
+        version: record.version + 1, updatedAt: at
+    });
+    event(tx, ref, req, 'submitted_' + change.kind, change.note || 'Submitted to COO / Director for approval');
+}
 router.use(verifyToken, requireRole(['purchase', 'coo', 'director']));
 router.param('id', (req, res, next, id) => /^[A-Za-z0-9_-]{1,128}$/.test(id) ? next() : next(fail(400, 'Invalid purchase ID')));
 router.get('/', wrap(async (req, res) => {
@@ -42,16 +59,16 @@ router.get('/', wrap(async (req, res) => {
     let query = collection().orderBy(admin.firestore.FieldPath.documentId()).limit(100);
     if (req.query.after) query = query.startAfter(text(req.query.after, 'cursor', 128, true));
     const snap = await query.get();
-    res.json({ success: true, data: snap.docs.map(d => ({ ...d.data(), id: d.id })), next: snap.size === 100 ? snap.docs[snap.size - 1].id : null, role: req.user.role });
+    res.json({ success: true, data: snap.docs.filter(d => !d.data().deletedAt).map(d => ({ ...d.data(), id: d.id })), next: snap.size === 100 ? snap.docs[snap.size - 1].id : null, role: req.user.role });
 }));
 router.post('/', requireRole('purchase'), wrap(async (req, res) => {
     const data = fields(req.body);
     const ref = collection().doc();
     const now = new Date().toISOString();
-    const record = { ...data, stage: 'rfq', approval: { status: 'draft' }, version: 1, createdAt: now, updatedAt: now, createdBy: actor(req) };
+    const record = { ...data, stage: 'rfq', approval: { status: 'pending', kind: 'initial', submittedBy: actor(req), submittedAt: now }, pendingChange: { kind: 'initial', previousApproval: { status: 'draft' } }, version: 1, createdAt: now, updatedAt: now, createdBy: actor(req) };
     const batch = db().batch();
     batch.set(ref, record);
-    event(batch, ref, req, 'created', 'Purchase request created');
+    event(batch, ref, req, 'created', 'Purchase created and submitted to COO / Director for initial approval');
     await batch.commit();
     res.status(201).json({ success: true, data: { ...record, id: ref.id } });
 }));
@@ -64,54 +81,48 @@ router.get('/:id', wrap(async (req, res) => {
 }));
 router.put('/:id', requireRole('purchase'), wrap(async (req, res) => {
     const data = fields(req.body);
-    if (!STAGES.includes(req.body.stage)) throw fail(400, 'Invalid stage');
-    const note = text(req.body.note ?? '', 'activity note', 2000);
+    if (!STAGES.includes(req.body.stage) || req.body.stage === 'approval') throw fail(400, 'Invalid stage');
+    const note = text(req.body.note ?? '', 'reason for change', 2000, true);
     const ref = collection().doc(req.params.id);
     await db().runTransaction(async tx => {
-        const snap = await tx.get(ref);
-        if (!snap.exists) throw fail(404, 'Purchase not found');
-        const previous = snap.data();
-        if (req.body.version !== previous.version) throw fail(409, 'This purchase changed. Close and reopen it before saving.');
-        if (previous.stage === 'closed') throw fail(409, 'Closed purchases cannot be edited');
-        if (previous.approval?.status === 'pending') throw fail(409, 'Awaiting approval. Withdraw the request before editing.');
-        const changed = Object.keys(data).filter(k => data[k] !== previous[k]);
-        const commercialChange = changed.some(k => k !== 'paymentReference');
-        const approval = commercialChange ? { status: 'draft' } : (previous.approval || { status: 'draft' });
-        const stage = commercialChange ? 'rfq' : req.body.stage;
-        if (stage === 'approval' || (STAGES.indexOf(stage) >= STAGES.indexOf('po') && approval.status !== 'approved')) {
-            throw fail(409, 'COO or Director approval is required before purchase order and subsequent stages.');
-        }
-        if (previous.stage !== req.body.stage && !note) throw fail(400, 'Explain the status change in the activity note');
+        const record = checkRecord(await tx.get(ref), req.body.version);
+        if (record.stage === 'closed') throw fail(409, 'Closed purchases cannot be edited');
+        if (STAGES.indexOf(req.body.stage) >= STAGES.indexOf('po') && record.approval?.status !== 'approved') throw fail(409, 'Initial approval is required before later process stages.');
         if (req.body.stage === 'closed' && !data.paymentReference) throw fail(400, 'Payment / closure reference is required to close');
-        tx.update(ref, { ...data, stage, approval, version: previous.version + 1, updatedAt: new Date().toISOString() });
-        event(tx, ref, req, 'updated', { changed: changed.map(field => ({ field, before: previous[field] ?? '', after: data[field] })), from: previous.stage, to: stage, note: note + (commercialChange && previous.approval?.status === 'approved' ? ' [Commercial details changed; fresh approval required.]' : '') });
+        if (Object.keys(data).every(k => data[k] === record[k]) && req.body.stage === record.stage) throw fail(400, 'No changes to submit');
+        queueChange(tx, ref, record, req, { kind: 'edit', data, stage: req.body.stage, note });
     });
     res.json({ success: true });
 }));
-// Approval decisions and entries are separate: no client-supplied approval fields are trusted.
+router.post('/:id/delete-request', requireRole('purchase'), wrap(async (req, res) => {
+    const note = text(req.body.note ?? '', 'reason for deletion', 2000, true);
+    const ref = collection().doc(req.params.id);
+    await db().runTransaction(async tx => {
+        const record = checkRecord(await tx.get(ref), req.body.version);
+        queueChange(tx, ref, record, req, { kind: 'delete', note });
+    });
+    res.json({ success: true });
+}));
+// Older saved drafts can be submitted from the register without reopening a form.
 router.post('/:id/submit', requireRole('purchase'), wrap(async (req, res) => {
     const ref = collection().doc(req.params.id);
     await db().runTransaction(async tx => {
-        const snap = await tx.get(ref);
-        if (!snap.exists) throw fail(404, 'Purchase not found');
-        const record = snap.data();
-        if (req.body.version !== record.version) throw fail(409, 'Purchase changed. Reopen before submitting.');
-        if (record.stage === 'closed' || ['pending', 'approved'].includes(record.approval?.status)) throw fail(409, 'This purchase cannot be submitted now.');
-        const at = new Date().toISOString();
-        tx.update(ref, { stage: 'approval', approval: { status: 'pending', submittedBy: actor(req), submittedAt: at }, version: record.version + 1, updatedAt: at });
-        event(tx, ref, req, 'submitted', 'Submitted to COO / Director for approval');
+        const record = checkRecord(await tx.get(ref), req.body.version);
+        if (record.stage === 'closed' || record.approval?.status === 'approved') throw fail(409, 'This purchase cannot be submitted now.');
+        queueChange(tx, ref, record, req, { kind: 'initial' });
     });
     res.json({ success: true });
 }));
 router.post('/:id/withdraw', requireRole('purchase'), wrap(async (req, res) => {
     const ref = collection().doc(req.params.id);
     await db().runTransaction(async tx => {
-        const snap = await tx.get(ref);
-        if (!snap.exists) throw fail(404, 'Purchase not found');
-        const record = snap.data();
-        if (req.body.version !== record.version || record.approval?.status !== 'pending') throw fail(409, 'Purchase changed or is no longer pending. Reopen it.');
-        tx.update(ref, { stage: 'rfq', approval: { status: 'draft' }, version: record.version + 1, updatedAt: new Date().toISOString() });
-        event(tx, ref, req, 'withdrawn', 'Withdrawn for editing');
+        const record = checkRecord(await tx.get(ref), req.body.version);
+        if (record.approval?.status !== 'pending') throw fail(409, 'No pending request to withdraw');
+        const change = record.pendingChange || { kind: 'initial', previousApproval: { status: 'draft' } };
+        const at = new Date().toISOString();
+        if (change.documentId) tx.update(ref.collection('documents').doc(change.documentId), { status: 'withdrawn' });
+        tx.update(ref, { pendingChange: null, approval: change.previousApproval, stage: record.stage === 'approval' ? 'rfq' : record.stage, version: record.version + 1, updatedAt: at });
+        event(tx, ref, req, 'withdrawn_' + change.kind, 'Pending operation withdrawn; existing entry preserved');
     });
     res.json({ success: true });
 }));
@@ -120,18 +131,30 @@ router.post('/:id/decision', requireRole(['coo', 'director']), wrap(async (req, 
     const note = text(req.body.note ?? '', 'decision note', 2000, req.body.decision === 'rejected');
     const ref = collection().doc(req.params.id);
     await db().runTransaction(async tx => {
-        const snap = await tx.get(ref);
-        if (!snap.exists) throw fail(404, 'Purchase not found');
-        const record = snap.data();
-        if (req.body.version !== record.version || record.approval?.status !== 'pending') throw fail(409, 'This request changed or was already decided. Reopen it.');
-        if (record.approval.submittedBy.uid === req.user.uid) throw fail(403, 'You cannot approve your own submission');
-        const at = new Date().toISOString();
-        tx.update(ref, { stage: req.body.decision === 'approved' ? 'po' : 'rfq', approval: { ...record.approval, status: req.body.decision, decidedBy: actor(req), decidedAt: at, note }, version: record.version + 1, updatedAt: at });
-        event(tx, ref, req, req.body.decision, note || 'Purchase approved');
+        const record = checkRecord(await tx.get(ref), req.body.version);
+        // Let management review legacy drafts shown in the existing register too.
+        if (!['pending', 'draft'].includes(record.approval?.status || 'draft')) throw fail(409, 'This request was already decided. Refresh it.');
+        const change = record.pendingChange || { kind: 'initial', previousApproval: { status: 'draft' } };
+        if ((record.approval?.submittedBy || record.createdBy)?.uid === req.user.uid) throw fail(403, 'You cannot approve your own submission');
+        const at = new Date().toISOString(), approved = req.body.decision === 'approved';
+        const decision = { ...record.approval, status: req.body.decision, kind: change.kind, decidedBy: actor(req), decidedAt: at, note };
+        const updates = { pendingChange: null, lastDecision: decision, updatedAt: at, version: record.version + 1,
+            approval: approved || change.kind === 'initial' ? decision : change.previousApproval,
+            stage: record.stage === 'approval' ? 'rfq' : record.stage };
+        if (approved && change.kind === 'edit') Object.assign(updates, change.data, { stage: change.stage });
+        if (approved && change.kind === 'document') updates.stage = change.stage;
+        if (approved && change.kind === 'delete') Object.assign(updates, { deletedAt: at, deletedBy: actor(req) });
+        if (change.documentId) tx.update(ref.collection('documents').doc(change.documentId), { status: req.body.decision, decidedBy: actor(req), decidedAt: at, note });
+        tx.update(ref, updates);
+        event(tx, ref, req, req.body.decision + '_' + change.kind, {
+            from: record.stage, to: updates.stage, note: [change.note, note].filter(Boolean).join(' — '),
+            changed: change.data ? Object.keys(change.data).filter(k => change.data[k] !== record[k]).map(field => ({ field, before: record[field] ?? '', after: change.data[field] })) : [],
+            documentId: change.documentId || null
+        });
     });
     res.json({ success: true });
 }));
-const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 1, fieldSize: 100, parts: 3 } }).single('file');
+const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 2, fieldSize: 100, parts: 4 } }).single('file');
 router.post('/:id/documents', requireRole('purchase'), (req, res, next) => upload(req, res, error => error ? next(fail(400, error.code === 'LIMIT_FILE_SIZE' ? 'Maximum file size is 10 MB' : 'Invalid upload')) : next()), wrap(async (req, res) => {
     let stored;
     let committed = false;
@@ -155,14 +178,17 @@ router.post('/:id/documents', requireRole('purchase'), (req, res, next) => uploa
         await db().runTransaction(async tx => {
             const snap = await tx.get(ref);
             if (!snap.exists) throw fail(404, 'Purchase not found');
-            if (snap.data().approval?.status === 'pending') throw fail(409, 'Withdraw the pending request before uploading documents');
-            if (snap.data().stage === 'closed') throw fail(409, 'Closed purchases cannot receive uploads');
+            const record = checkRecord(snap, Number(req.body.version));
+            if (record.approval?.status !== 'approved') throw fail(409, 'Approve the current request before adding another process document.');
+            if (record.stage === 'closed') throw fail(409, 'Closed purchases cannot receive uploads');
             const at = new Date().toISOString();
-            tx.set(doc, { filename, contentType, size: buffer.length, type: req.body.type, storagePath, actor: actor(req), at });
-            const resetsApproval = snap.data().approval?.status === 'approved' && !['delivery', 'invoice', 'receipt'].includes(req.body.type);
-            tx.update(ref, { updatedAt: at, version: snap.data().version + 1, ...(resetsApproval ? { stage: 'rfq', approval: { status: 'draft' } } : {}) });
-            if (resetsApproval) event(tx, ref, req, 'approval_reset', 'Supporting purchase documents changed; fresh approval required');
-            event(tx, ref, req, 'uploaded', `${req.body.type}: ${filename}`);
+            const stageByType = { requirement: 'rfq', quotation: 'quote', comparison: 'compare', approval: 'compare', po: 'po', delivery: 'delivery', invoice: 'match', receipt: 'payment' };
+            const proposedStage = stageByType[req.body.type] || record.stage;
+            // Supporting files never move a later approved process backwards.
+            const stage = STAGES.indexOf(proposedStage) > STAGES.indexOf(record.stage) ? proposedStage : record.stage;
+            tx.set(doc, { filename, contentType, size: buffer.length, type: req.body.type, storagePath, actor: actor(req), at, status: 'pending' });
+            queueChange(tx, ref, record, req, { kind: 'document', documentId: doc.id, documentType: req.body.type, filename, stage, note: req.body.type + ': ' + filename });
+
         });
         committed = true;
         res.status(201).json({ success: true });
