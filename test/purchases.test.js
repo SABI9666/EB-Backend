@@ -20,9 +20,10 @@ class Query {
 function batch() { const writes=[];return {set:(ref,data)=>writes.push(()=>records.set(ref.path,data)),update:(ref,data)=>writes.push(()=>records.set(ref.path,{...records.get(ref.path),...data})),get:ref=>ref.get(),commit:async()=>writes.forEach(fn=>fn())}; }
 const database={collection:name=>new Query(name),batch,runTransaction:async fn=>{const tx=batch();await fn(tx);await tx.commit();}};
 const firestore=()=>database;firestore.FieldPath={documentId:()=> '__name__'};
-const mock={firestore,apps:[{}],auth:()=>({verifyIdToken:async token=>({uid:token,email:({purchase:'anwar@edanbrook.in',purchase2:'anwar1@edanbrook.in',unverified:'anwar@edanbrook.in'}[token] || token+'@test.local'),email_verified:token!=='unverified'})}),storage:()=>({bucket:()=>({file:path=>({save:async data=>storage.set(path,data),delete:async()=>storage.delete(path),createReadStream:()=>Readable.from(storage.get(path))})})})};
+const mock={firestore,apps:[{}],auth:()=>({verifyIdToken:async token=>({uid:token,email:({purchase:'anwar@edanbrook.in',purchase2:'anwar1@edanbrook.in',unverified:'anwar@edanbrook.in',unverified2:'anwar1@edanbrook.in',wrongDomain:'anwar@edanbrook.com',wrongDomain2:'anwar1@edanbrook.com',suspendedPurchase:'anwar@edanbrook.in',inactivePurchase:'anwar1@edanbrook.in'}[token] || token+'@test.local'),email_verified:!['unverified','unverified2','purchase','purchase2'].includes(token)})}),storage:()=>({bucket:()=>({file:path=>({save:async data=>storage.set(path,data),delete:async()=>storage.delete(path),createReadStream:()=>Readable.from(storage.get(path))})})})};
 require.cache[require.resolve('../api/_firebase-admin')]={exports:mock};
 for(const role of ['coo','director','bdm','suspended','purchase','purchase2','forged','unverified']) records.set('users/'+role,{name:role,role:['forged','unverified'].includes(role)?'purchase':role==='purchase2'?'bdm':role==='suspended'?'coo':role,status:role==='suspended'?'suspended':'active'});
+for (const uid of ['unverified2','wrongDomain','wrongDomain2','suspendedPurchase','inactivePurchase']) records.set('users/'+uid,{name:uid,role:'purchase',status:uid==='suspendedPurchase'?'suspended':uid==='inactivePurchase'?'inactive':'active'});
 const app=express();app.use(express.json());app.get('/api/projects',require('../middleware/auth').verifyToken,(req,res)=>res.json({success:true}));app.use('/api/purchases',require('../api/purchases'));
 const data={project:'Project Alpha',item:'Steel',qty:'2 MT',amount:20,currency:'INR',priority:'normal'};
 test('purchase workflow, audit, access controls and upload validation',async t=>{
@@ -33,7 +34,10 @@ test('purchase workflow, audit, access controls and upload validation',async t=>
  assert.equal((await fetch(url.replace('/purchases','/projects'),{headers:{Authorization:'Bearer purchase'}})).status,403);
  assert.equal((await call('bdm','GET')).status,403);
  assert.equal((await call('forged','GET')).status,403);
- assert.equal((await call('unverified','GET')).status,403);
+ for (const uid of ['unverified','unverified2','purchase','purchase2']) {
+   const response = await call(uid,'GET'); assert.equal(response.status,200); assert.equal((await response.json()).role,'purchase');
+ }
+ for (const uid of ['wrongDomain','wrongDomain2','suspendedPurchase','inactivePurchase']) assert.equal((await call(uid,'GET')).status,403);
  assert.equal((await call('purchase2','GET')).status,200);
  assert.equal((await call('coo','POST','',data)).status,403);
  assert.equal((await call('suspended','GET')).status,403);
