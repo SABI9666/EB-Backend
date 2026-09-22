@@ -28,7 +28,7 @@ Every creation, update, upload, submission, withdrawal and decision has an atomi
 
 Deploy backend and frontend together, backend first. The two Purchase emails are allowlisted in backend authentication and frontend routing. An existing active user profile resolves to Purchase for these emails regardless of its old role. No live accounts or passwords were created or changed by this work.
 
-If an account does not exist, create/register it using the Purchase role and the named email. Each account must have a Firebase Auth user and active Firestore users profile. Email verification is required; the portal provides Send verification email and I have verified my email controls. No shared/default password is embedded in code. The backend rejects unverified identities and unlisted users with a forged purchase role, and limits Purchase identities to purchase API routes. Other role resolution remains unchanged.
+If an account does not exist, create/register it using the Purchase role and the named email. Each account must have a Firebase Auth user and active Firestore users profile. Email verification is not required for the two allowlisted accounts; after registration they can log in with their password. No shared/default password is embedded in code. The backend accepts both verified and unverified allowlisted identities, rejects unlisted users with a forged purchase role, and limits Purchase identities to purchase API routes. Other role resolution remains unchanged.
 
 Existing Firebase credentials need Firestore and Storage read/write permissions. Inspect deployed rules: users must not be able to change their own authorization fields, and purchases/documents/activity and purchase-documents storage objects must not permit broad direct client access or public bucket access. API changes do not modify deployed Firebase rules. Collections are created on first use; queries need only standard single-field indexes. Existing records without an approval property are treated as drafts, not approved requests.
 
@@ -40,6 +40,6 @@ Under `/api/purchases`: GET/POST `/`, GET/PUT `/:id`, POST `/:id/documents`, GET
 
 ## Validation
 
-`npm run test:purchases` runs the actual Express router/auth middleware against mocked Firebase services. Coverage includes both allowed emails, unauthorized/unverified identities, role separation, validation, upload limits/signatures, activity, downloads, submit/reject/resubmit/approve, stale decisions, withdrawal, approval reset and closure protections.
+`npm run test:purchases` runs the actual Express router/auth middleware against mocked Firebase services. Coverage includes both allowed emails, unauthorized identities and allowlisted identities without email verification, role separation, validation, upload limits/signatures, activity, downloads, submit/reject/resubmit/approve, stale decisions, withdrawal, approval reset and closure protections.
 
 Frontend jsdom checks passed for both named login routes, purchase creation/upload, unsaved-edit submission guard, pending locks, COO and Director decision controls, rejection notes, approval and filtering. Live Firebase/rules and production-account testing remain deployment checks. Full visual browser testing was unavailable because Chromium download timed out. Production deployment is not included in these changes.

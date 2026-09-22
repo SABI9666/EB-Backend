@@ -54,7 +54,7 @@ async function verifyToken(req, res, next) {
       'rebar.lead1@edanbrook.com'
     ];
 
-    const userEmail = (decodedToken.email || '').toLowerCase();
+    const userEmail = (decodedToken.email || '').trim().toLowerCase();
     let resolvedRole = userData.role;
 
     if (DESIGN_LEAD_EMAILS.includes(userEmail) && resolvedRole !== 'design_lead') {
@@ -62,12 +62,9 @@ async function verifyToken(req, res, next) {
       resolvedRole = 'design_lead';
     }
 
-    // Purchase access is bound to authenticated, verified email identities.
+    // Purchase access is bound to these authenticated identities; email verification is not required.
     const purchaseEmails = ['anwar@edanbrook.in', 'anwar1@edanbrook.in'];
     if (purchaseEmails.includes(userEmail)) {
-      if (!decodedToken.email_verified) {
-        return res.status(403).json({ success: false, error: 'Verify your email before accessing the Purchase portal.' });
-      }
       resolvedRole = 'purchase';
     } else if (resolvedRole === 'purchase') {
       return res.status(403).json({ success: false, error: 'This account is not authorized for the Purchase portal.' });
