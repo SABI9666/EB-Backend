@@ -195,6 +195,7 @@ try {
     app.use('/api/leads', leadsHandler);
     app.use('/api/sample-projects', sampleProjectsHandler);
     app.use('/api/purchases', require('./api/purchases'));
+    app.use('/api/estimation-reports', require('./api/estimation-reports'));
 
     console.log('✅ All routes registered');
 } catch (error) {
