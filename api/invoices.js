@@ -6,30 +6,8 @@ const { sendEmailNotification } = require('./email'); // Import email function
 
 const db = admin.firestore();
 
-// Simple auth check function (inline)
-async function checkAuth(req, res, next) {
-    try {
-        const authHeader = req.headers.authorization;
-        if (!authHeader || !authHeader.startsWith('Bearer ')) {
-            return res.status(401).json({ success: false, error: 'Unauthorized' });
-        }
-        const token = authHeader.split('Bearer ')[1];
-        const decodedToken = await admin.auth().verifyIdToken(token);
-        req.user = { uid: decodedToken.uid, email: decodedToken.email };
-        
-        // Get user details from Firestore
-        const userDoc = await db.collection('users').doc(decodedToken.uid).get();
-        if (userDoc.exists) {
-            const userData = userDoc.data();
-            req.user.name = userData.name || userData.email;
-            req.user.role = userData.role;
-        }
-        
-        next();
-    } catch (error) {
-        res.status(401).json({ success: false, error: 'Invalid token' });
-    }
-}
+// Use the shared account restrictions, including the read-only Sales identity.
+const { verifyToken: checkAuth } = require('../middleware/auth');
 
 // Get all invoices
 router.get('/', checkAuth, async (req, res) => {

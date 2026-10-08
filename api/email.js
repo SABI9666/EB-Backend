@@ -1336,7 +1336,7 @@ async function sendEmailNotification(event, data) {
 // ==========================================
 // API ENDPOINT
 // ==========================================
-emailRouter.post('/trigger', async (req, res) => {
+emailRouter.post('/trigger', require('../middleware/auth').verifyToken, async (req, res) => {
   try {
     const { event, data } = req.body;
     
