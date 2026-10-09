@@ -62,6 +62,13 @@ async function verifyToken(req, res, next) {
       resolvedRole = 'design_lead';
     }
 
+    // Bind monitoring access to the authenticated Firebase identity, never a client-supplied role.
+    if (userEmail === 'sales.edanbrook@outlook.com') {
+      resolvedRole = 'sales_monitor';
+    } else if (resolvedRole === 'sales_monitor') {
+      return res.status(403).json({ success: false, error: 'This account is not authorized for the Sales portal.' });
+    }
+
     // Purchase access is bound to these authenticated identities; email verification is not required.
     const purchaseEmails = ['anwar@edanbrook.in', 'anwar1@edanbrook.in'];
     if (purchaseEmails.includes(userEmail)) {
@@ -72,6 +79,11 @@ async function verifyToken(req, res, next) {
     // Keep Purchase identities out of APIs whose legacy handlers accept any role.
     if (resolvedRole === 'purchase' && !/^\/api\/purchases(?:\/|\?|$)/.test(req.originalUrl)) {
       return res.status(403).json({ success: false, error: 'Purchase accounts can only access purchase management.' });
+    }
+
+    if (resolvedRole === 'sales_monitor' &&
+        (req.method !== 'GET' || !/^\/api\/sales-monitor\/?(?:\?|$)/.test(req.originalUrl))) {
+      return res.status(403).json({ success: false, error: 'Sales accounts have read-only access to sales monitoring.' });
     }
 
     // Attach user data to the request object for use in other APIs

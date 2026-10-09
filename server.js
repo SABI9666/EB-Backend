@@ -194,6 +194,7 @@ try {
     app.use('/api/tekla-reports', teklaReportsHandler);
     app.use('/api/leads', leadsHandler);
     app.use('/api/sample-projects', sampleProjectsHandler);
+    app.use('/api/sales-monitor', require('./api/sales-monitor'));
     app.use('/api/purchases', require('./api/purchases'));
     app.use('/api/estimation-reports', require('./api/estimation-reports'));
 
