@@ -6,6 +6,44 @@ const { verifyToken } = require('../middleware/auth');
 
 const db = admin.firestore();
 
+// Fields Accounts may correct after a subvendor is entered.
+const EDITABLE_FIELDS = [
+    'vendorName', 'vendorCompany', 'vendorEmail', 'vendorPhone',
+    'vendorGST', 'vendorPAN', 'vendorAddress', 'vendorBankDetails',
+    'projectId', 'projectName', 'projectCode', 'clientCompany',
+    'poNumber', 'poDate', 'poAmount', 'poCurrency', 'poDescription',
+    'paymentTerms', 'scopeOfWork', 'remarks'
+];
+
+async function uploadPoFile(poFileBase64, poFileName) {
+    const bucket = admin.storage().bucket();
+    const filePath = `subventor-po/${Date.now()}_${poFileName}`;
+    const file = bucket.file(filePath);
+    await file.save(Buffer.from(poFileBase64, 'base64'), { metadata: { contentType: 'application/pdf' } });
+    await file.makePublic();
+    return `https://storage.googleapis.com/${bucket.name}/${filePath}`;
+}
+
+// Paid / balance / status always follow the P.O. amount and the payment history.
+function paymentTotals(poAmount, history, currentStatus) {
+    const totalPaid = history.reduce((sum, p) => sum + (parseFloat(p.amount) || 0), 0);
+    const balanceDue = Math.max(0, (poAmount || 0) - totalPaid);
+    let paymentStatus = totalPaid <= 0 ? 'pending' : (poAmount > 0 && totalPaid >= poAmount ? 'paid' : 'partial');
+    if (currentStatus === 'on_hold') paymentStatus = 'on_hold';
+    const dates = history.map(p => p.paymentDate).filter(Boolean).sort();
+    return { totalPaid, balanceDue, paymentStatus, lastPaymentDate: dates[dates.length - 1] || null };
+}
+
+function logActivity(req, type, details) {
+    return db.collection('activities').add({
+        type, details,
+        performedByName: req.user.name,
+        performedByRole: req.user.role,
+        performedByUid: req.user.uid,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
+}
+
 // GET /api/subventors - List all subventors (with optional filters)
 router.get('/', verifyToken, async (req, res) => {
     try {
@@ -74,18 +112,7 @@ router.post('/', verifyToken, async (req, res) => {
         }
 
         // Upload P.O. file if provided
-        let poFileUrl = '';
-        if (poFileBase64 && poFileName) {
-            const bucket = admin.storage().bucket();
-            const fileBuffer = Buffer.from(poFileBase64, 'base64');
-            const filePath = `subventor-po/${Date.now()}_${poFileName}`;
-            const file = bucket.file(filePath);
-            await file.save(fileBuffer, {
-                metadata: { contentType: 'application/pdf' }
-            });
-            await file.makePublic();
-            poFileUrl = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
-        }
+        const poFileUrl = poFileBase64 && poFileName ? await uploadPoFile(poFileBase64, poFileName) : '';
 
         const subventorData = {
             vendorName,
@@ -186,15 +213,7 @@ router.put('/:id', verifyToken, async (req, res) => {
             const { poFileBase64, poFileName, poNumber, poDate, poAmount, poCurrency, poDescription } = data || {};
 
             let poFileUrl = subventorDoc.data().poFileUrl || '';
-            if (poFileBase64 && poFileName) {
-                const bucket = admin.storage().bucket();
-                const fileBuffer = Buffer.from(poFileBase64, 'base64');
-                const filePath = `subventor-po/${Date.now()}_${poFileName}`;
-                const file = bucket.file(filePath);
-                await file.save(fileBuffer, { metadata: { contentType: 'application/pdf' } });
-                await file.makePublic();
-                poFileUrl = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
-            }
+            if (poFileBase64 && poFileName) poFileUrl = await uploadPoFile(poFileBase64, poFileName);
 
             const updates = {
                 poFileUrl,
@@ -300,27 +319,86 @@ router.put('/:id', verifyToken, async (req, res) => {
             await subventorRef.update(updates);
             return res.status(200).json({ success: true, message: 'Status updated successfully' });
 
+        } else if (action === 'edit_payment' || action === 'delete_payment') {
+            // Correct or remove one recorded payment. recordedAt guards against editing a shifted entry.
+            const { index, recordedAt, amount, paymentDate, paymentMethod, referenceNo, notes } = data || {};
+            if (action === 'edit_payment' && !(parseFloat(amount) > 0)) {
+                return res.status(400).json({ success: false, error: 'Valid payment amount is required' });
+            }
+            let current;
+            await db.runTransaction(async tx => {
+                const snap = await tx.get(subventorRef);
+                current = snap.data();
+                const history = [...(current.paymentHistory || [])];
+                const entry = history[index];
+                if (!Number.isInteger(index) || !entry || (entry.recordedAt || '') !== (recordedAt || '')) {
+                    const err = new Error('This payment has changed since you opened it. Please reload and try again.');
+                    err.status = 409; throw err;
+                }
+                if (action === 'delete_payment') history.splice(index, 1);
+                else history[index] = {
+                    ...entry,
+                    amount: parseFloat(amount),
+                    paymentDate: paymentDate || entry.paymentDate,
+                    paymentMethod: paymentMethod ?? entry.paymentMethod ?? '',
+                    referenceNo: referenceNo ?? entry.referenceNo ?? '',
+                    notes: notes ?? entry.notes ?? '',
+                    editedBy: req.user.name,
+                    editedAt: new Date().toISOString()
+                };
+                tx.update(subventorRef, {
+                    paymentHistory: history,
+                    ...paymentTotals(current.poAmount || 0, history, current.paymentStatus),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            });
+            await logActivity(req, action === 'delete_payment' ? 'subventor_payment_deleted' : 'subventor_payment_edited',
+                `Payment ${action === 'delete_payment' ? 'removed' : 'edited'} for "${current.vendorCompany}"`);
+            return res.status(200).json({ success: true, message: action === 'delete_payment' ? 'Payment removed' : 'Payment updated' });
+
         } else {
-            // General update
-            const allowedFields = [
-                'vendorName', 'vendorCompany', 'vendorEmail', 'vendorPhone',
-                'vendorGST', 'vendorPAN', 'vendorAddress', 'vendorBankDetails',
-                'projectId', 'projectName', 'projectCode', 'clientCompany',
-                'paymentTerms', 'scopeOfWork', 'remarks'
-            ];
-            const updates = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
-            for (const field of allowedFields) {
-                if (req.body[field] !== undefined) {
-                    updates[field] = req.body[field];
+            // Edit any entered detail (vendor, project, P.O.); optionally replace the P.O. file.
+            const input = action === 'edit_details' ? (data || {}) : req.body;
+            const updates = {};
+            for (const field of EDITABLE_FIELDS) {
+                if (input[field] === undefined) continue;
+                updates[field] = typeof input[field] === 'string' ? input[field].trim() : input[field];
+            }
+            if (updates.poAmount !== undefined) {
+                updates.poAmount = parseFloat(updates.poAmount || 0);
+                if (!Number.isFinite(updates.poAmount) || updates.poAmount < 0) {
+                    return res.status(400).json({ success: false, error: 'P.O. amount must be zero or more' });
                 }
             }
-
-            await subventorRef.update(updates);
-            return res.status(200).json({ success: true, message: 'Subventor updated successfully' });
+            if (updates.poCurrency !== undefined) updates.poCurrency = String(updates.poCurrency || 'INR').toUpperCase();
+            if (updates.vendorName === '' || updates.vendorCompany === '') {
+                return res.status(400).json({ success: false, error: 'Vendor name and company are required' });
+            }
+            if (input.poFileBase64 && input.poFileName) {
+                updates.poFileUrl = await uploadPoFile(input.poFileBase64, input.poFileName);
+                updates.poFileName = input.poFileName;
+            }
+            let before;
+            await db.runTransaction(async tx => {
+                const snap = await tx.get(subventorRef);
+                before = snap.data();
+                const poAmount = updates.poAmount !== undefined ? updates.poAmount : (before.poAmount || 0);
+                tx.update(subventorRef, {
+                    ...updates,
+                    ...paymentTotals(poAmount, before.paymentHistory || [], before.paymentStatus),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    lastEditedBy: req.user.name,
+                    lastEditedAt: new Date().toISOString()
+                });
+            });
+            const changed = Object.keys(updates).filter(k => String(updates[k]) !== String(before[k] ?? ''));
+            await logActivity(req, 'subventor_edited',
+                `Subvendor "${updates.vendorCompany || before.vendorCompany}" edited${changed.length ? ': ' + changed.join(', ') : ''}`);
+            return res.status(200).json({ success: true, message: 'Subvendor updated successfully' });
         }
     } catch (error) {
         console.error('Subventor PUT error:', error);
-        return res.status(500).json({ success: false, error: error.message });
+        return res.status(error.status || 500).json({ success: false, error: error.message });
     }
 });
 
