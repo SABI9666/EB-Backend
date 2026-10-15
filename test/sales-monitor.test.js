@@ -26,7 +26,7 @@ test('unconverted wins, missing metadata, zero values and unassigned BDM remain 
     assert.equal(data.rows[0].value, 0); assert.equal(data.rows[0].date, null);
     assert.equal(data.rows[0].currency, 'UNSPECIFIED'); assert.equal(data.rows[0].bdmUid, 'unassigned');
 });
-test('approved purchase projects count as won sales at their approved value and award date', () => {
+test('approved purchase projects are a separate, non-BDM source at their initial sales value', () => {
     const purchaseProjects = [
         { id: 'pp1', projectNumber: 'EB-101', name: 'Plant shed', client: 'Acme', projectValue: 999, sales: { include: true, value: 500, currency: 'INR', date: '2026-10-05' } },
         { id: 'pp2', projectNumber: 'EB-102', name: 'Pending', projectValue: 300, sales: null },
@@ -34,7 +34,7 @@ test('approved purchase projects count as won sales at their approved value and 
     ];
     const rows = buildReport({ ...fixture, purchaseProjects }).rows.filter(r => r.source === 'purchase');
     assert.equal(rows.length, 1);
-    assert.deepEqual([rows[0].kind, rows[0].value, rows[0].currency, rows[0].date, rows[0].projectNumber, rows[0].client, rows[0].bdmName], ['won', 500, 'INR', '2026-10-05', 'EB-101', 'Acme', 'Purchase projects']);
+    assert.deepEqual([rows[0].kind, rows[0].value, rows[0].currency, rows[0].date, rows[0].projectNumber, rows[0].client, rows[0].bdmName], ['purchase', 500, 'INR', '2026-10-05', 'EB-101', 'Acme', 'Purchase portal']);
 });
 const identities = {
     sales: { role: 'director', email: 'sales.edanbrook@outlook.com' },

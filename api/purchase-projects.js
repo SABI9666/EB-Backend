@@ -48,6 +48,9 @@ function projectFields(body) {
     if (out.startDate && out.endDate && out.endDate < out.startDate) throw fail(400, 'Planned completion must be on or after the start date');
     if (!STATUSES.includes(body.status)) throw fail(400, 'Invalid project status');
     out.status = body.status;
+    out.actualCompletion = isoDate(body.actualCompletion, 'actual completion date');
+    if (out.status === 'completed' && !out.actualCompletion) throw fail(400, 'Enter the actual completion date for a completed project');
+    if (out.actualCompletion && out.startDate && out.actualCompletion < out.startDate) throw fail(400, 'Actual completion must be on or after the start date');
     if (typeof body.includeInSales !== 'boolean') throw fail(400, 'Choose whether the project value counts in sales');
     out.includeInSales = body.includeInSales;
     return out;
@@ -102,7 +105,12 @@ function checkRecord(snap, version) {
     if (version !== record.version) throw fail(409, 'This project changed. Refresh and try again.');
     return record;
 }
-const salesSnapshot = record => ({ include: record.includeInSales && record.status !== 'cancelled', value: record.projectValue, currency: record.currency, date: record.awardDate });
+// The sales portal shows the initial sales value: the value and award date approved
+// the first time. Later approvals only change whether the project still counts.
+function salesUpdate(record, req, at) {
+    const initialSales = record.initialSales || { value: record.projectValue, currency: record.currency, date: record.awardDate, approvedAt: at, approvedBy: actor(req) };
+    return { initialSales, sales: { include: record.includeInSales && record.status !== 'cancelled', value: initialSales.value, currency: initialSales.currency, date: initialSales.date } };
+}
 
 router.use(verifyToken, requireRole(['purchase', 'coo', 'director']));
 router.param('id', (req, res, next, id) => /^[A-Za-z0-9_-]{1,128}$/.test(id) ? next() : next(fail(400, 'Invalid project ID')));
@@ -143,7 +151,7 @@ router.get('/:id', wrap(async (req, res) => {
     res.set('Cache-Control', 'no-store').json({ success: true, data: { ...snap.data(), id: snap.id },
         entries: entries.docs.map(d => ({ ...d.data(), id: d.id })), activities: activities.docs.map(d => ({ ...d.data(), id: d.id })) });
 }));
-// Header edits apply at once but go back to management; sales keep the last approved snapshot.
+// Header edits apply at once but go back to management; sales keep the initial approved value.
 router.put('/:id', requireRole('purchase'), wrap(async (req, res) => {
     const data = projectFields(req.body);
     const note = text(req.body.note ?? '', 'reason for change', 2000, true);
@@ -167,7 +175,7 @@ router.post('/:id/decision', requireRole(['coo', 'director']), wrap(async (req, 
         if (record.approval?.status !== 'pending') throw fail(409, 'This project was already decided. Refresh it.');
         const at = new Date().toISOString(), approved = req.body.decision === 'approved';
         const approval = { ...record.approval, status: req.body.decision, decidedBy: actor(req), decidedAt: at, note };
-        tx.update(ref, { approval, version: record.version + 1, updatedAt: at, ...(approved ? { sales: salesSnapshot(record), approvedAt: at } : {}) });
+        tx.update(ref, { approval, version: record.version + 1, updatedAt: at, ...(approved ? { ...salesUpdate(record, req, at), approvedAt: at } : {}) });
         event(tx, ref, req, req.body.decision + '_' + (record.approval.kind || 'initial'), note || (approved ? 'Approved' : 'Rejected'));
     });
     res.json({ success: true });

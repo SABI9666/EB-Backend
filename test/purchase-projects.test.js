@@ -63,7 +63,14 @@ test('purchase projects: approval gates sales value, daily logs keep running tot
     data = (await detail(path)).data;
     assert.equal(data.approval.status, 'pending'); assert.equal(data.projectValue, 150000); assert.equal(data.sales.value, 100000);
     assert.equal((await call('coo', 'POST', path + '/decision', { version: data.version, decision: 'approved' })).status, 200);
-    assert.equal((await detail(path)).data.sales.value, 150000);
+    data = (await detail(path)).data;
+    // Sales keep the initial approved value; the revised value is the current contract value.
+    assert.equal(data.sales.value, 100000); assert.equal(data.initialSales.value, 100000); assert.equal(data.projectValue, 150000);
+    assert.equal((await call('purchase', 'PUT', path, { ...project, projectValue: 150000, includeInSales: false, version: data.version, note: 'Not a sale' })).status, 200);
+    data = (await detail(path)).data;
+    assert.equal((await call('director', 'POST', path + '/decision', { version: data.version, decision: 'approved' })).status, 200);
+    data = (await detail(path)).data;
+    assert.equal(data.sales.include, false); assert.equal(data.sales.value, 100000);
     // Daily logs: amounts computed server side, totals maintained, removal reverses totals.
     assert.equal((await call('purchase', 'POST', path + '/entries', { type: 'material', date: '2099-01-01', description: 'Cement', quantity: 1, rate: 1 })).status, 400);
     assert.equal((await call('purchase', 'POST', path + '/entries', { type: 'manpower', date: '2026-10-07', description: 'Welder', workers: 0, hours: 8, rate: 900 })).status, 400);
@@ -85,6 +92,7 @@ test('purchase projects: approval gates sales value, daily logs keep running tot
     assert.equal(full.data.totals.machinery, 0); assert.equal(full.data.totals.entries, 2); assert.equal(full.data.totals.machineHours, 0);
     // Completed projects take no new logs.
     data = full.data;
-    assert.equal((await call('purchase', 'PUT', path, { ...project, projectValue: 150000, status: 'completed', version: data.version, note: 'Handed over' })).status, 200);
+    assert.equal((await call('purchase', 'PUT', path, { ...project, projectValue: 150000, status: 'completed', version: data.version, note: 'Handed over' })).status, 400);
+    assert.equal((await call('purchase', 'PUT', path, { ...project, projectValue: 150000, status: 'completed', actualCompletion: '2026-10-09', version: data.version, note: 'Handed over' })).status, 200);
     assert.equal((await call('purchase', 'POST', path + '/entries', { type: 'material', date: '2026-10-09', description: 'Paint', quantity: 1, rate: 1 })).status, 409);
 });
