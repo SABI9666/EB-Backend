@@ -37,7 +37,7 @@ function number(value, name, { max = 1e12, integer = false, required = true } = 
 function projectFields(body) {
     const out = {};
     out.name = text(body.name, 'project name', 200, true);
-    for (const key of ['client', 'location', 'manager']) out[key] = text(body[key] ?? '', key, 200);
+    for (const key of ['client', 'location', 'manager', 'poNumber', 'clientContact']) out[key] = text(body[key] ?? '', key, 200);
     out.description = text(body.description ?? '', 'description', 4000);
     out.projectValue = number(body.projectValue, 'project value');
     out.currency = text(body.currency, 'currency', 3, true).toUpperCase();

@@ -23,8 +23,8 @@ function text(value, name, max, required = false) {
 }
 function fields(body) {
     const out = {};
-    for (const key of ['project', 'item', 'qty']) out[key] = text(body[key], key, 200, true);
-    for (const key of ['projectNumber', 'vendor', 'reference', 'specification', 'paymentReference']) out[key] = text(body[key] ?? '', key, key === 'specification' ? 4000 : 200);
+    for (const key of ['item', 'qty']) out[key] = text(body[key], key, 200, true);
+    for (const key of ['projectNumber', 'project', 'vendor', 'reference', 'specification', 'paymentReference']) out[key] = text(body[key] ?? '', key, key === 'specification' ? 4000 : 200);
     out.projectNumber = out.projectNumber.toUpperCase();
     out.currency = text(body.currency, 'currency', 3, true).toUpperCase();
     if (!['INR', 'USD', 'CAD', 'AUD', 'GBP', 'EUR'].includes(out.currency)) throw fail(400, 'Unsupported currency');
@@ -35,6 +35,17 @@ function fields(body) {
     if (!['normal', 'urgent'].includes(body.priority)) throw fail(400, 'Invalid priority');
     out.priority = body.priority;
     return out;
+}
+// Every purchase request belongs to a project in Projects & Site Logs that COO / Director approved.
+async function linkProject(data, isNew) {
+    if (!data.projectNumber) throw fail(400, 'Select the project this purchase belongs to');
+    const lock = await db().collection('purchase_project_numbers').doc(encodeURIComponent(data.projectNumber).replace(/\./g, '%2E')).get();
+    const snap = lock.exists ? await db().collection('purchase_projects').doc(lock.data().projectId).get() : null;
+    if (!snap || !snap.exists) throw fail(400, `Project ${data.projectNumber} was not found. Create it under Projects first.`);
+    const project = snap.data();
+    if (!project.approvedAt) throw fail(409, `Project ${data.projectNumber} must be approved by COO / Director before purchase requests are raised`);
+    if (project.status === 'cancelled' || (isNew && project.status === 'completed')) throw fail(409, `Project ${data.projectNumber} is ${project.status}; new purchase requests are not allowed`);
+    return { ...data, project: project.name, projectId: snap.id };
 }
 // The live record is unchanged while a proposed operation awaits a decision.
 function checkRecord(snap, version) {
@@ -63,7 +74,7 @@ router.get('/', wrap(async (req, res) => {
     res.json({ success: true, data: snap.docs.filter(d => !d.data().deletedAt).map(d => ({ ...d.data(), id: d.id })), next: snap.size === 100 ? snap.docs[snap.size - 1].id : null, role: req.user.role });
 }));
 router.post('/', requireRole('purchase'), wrap(async (req, res) => {
-    const data = fields(req.body);
+    const data = await linkProject(fields(req.body), true);
     const ref = collection().doc();
     const now = new Date().toISOString();
     const record = { ...data, stage: 'rfq', approval: { status: 'pending', kind: 'initial', submittedBy: actor(req), submittedAt: now }, pendingChange: { kind: 'initial', previousApproval: { status: 'draft' } }, version: 1, createdAt: now, updatedAt: now, createdBy: actor(req) };
@@ -81,7 +92,7 @@ router.get('/:id', wrap(async (req, res) => {
     res.json({ success: true, data: { ...record.data(), id: record.id }, activities: activities.docs.map(d => ({ ...d.data(), id: d.id })), documents: documents.docs.map(d => { const { storagePath, ...data } = d.data(); return { ...data, id: d.id }; }) });
 }));
 router.put('/:id', requireRole('purchase'), wrap(async (req, res) => {
-    const data = fields(req.body);
+    const data = await linkProject(fields(req.body), false);
     if (!STAGES.includes(req.body.stage) || req.body.stage === 'approval') throw fail(400, 'Invalid stage');
     const note = text(req.body.note ?? '', 'reason for change', 2000, true);
     const ref = collection().doc(req.params.id);

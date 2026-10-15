@@ -25,7 +25,9 @@ require.cache[require.resolve('../api/_firebase-admin')]={exports:mock};
 for(const role of ['coo','director','bdm','suspended','purchase','purchase2','forged','unverified']) records.set('users/'+role,{name:role,role:['forged','unverified'].includes(role)?'purchase':role==='purchase2'?'bdm':role==='suspended'?'coo':role,status:role==='suspended'?'suspended':'active'});
 for (const uid of ['unverified2','wrongDomain','wrongDomain2','suspendedPurchase','inactivePurchase']) records.set('users/'+uid,{name:uid,role:'purchase',status:uid==='suspendedPurchase'?'suspended':uid==='inactivePurchase'?'inactive':'active'});
 const app=express();app.use(express.json());app.get('/api/projects',require('../middleware/auth').verifyToken,(req,res)=>res.json({success:true}));app.use('/api/purchases',require('../api/purchases'));
-const data={project:'Project Alpha',item:'Steel',qty:'2 MT',amount:20,currency:'INR',priority:'normal'};
+records.set('purchase_project_numbers/EB-1',{projectId:'pp1'});records.set('purchase_projects/pp1',{name:'Project Alpha',projectNumber:'EB-1',status:'active',approvedAt:'2026-10-01T00:00:00Z'});
+records.set('purchase_project_numbers/EB-2',{projectId:'pp2'});records.set('purchase_projects/pp2',{name:'Pending project',projectNumber:'EB-2',status:'active'});
+const data={projectNumber:'eb-1',item:'Steel',qty:'2 MT',amount:20,currency:'INR',priority:'normal'};
 test('purchase operations require management approval without changing approved data prematurely', async t => {
  const server=app.listen(0);await new Promise(resolve=>server.once('listening',resolve));t.after(()=>server.close());
  const url='http://127.0.0.1:'+server.address().port+'/api/purchases';
@@ -41,10 +43,15 @@ test('purchase operations require management approval without changing approved 
  }
  for (const uid of ['bdm','forged','wrongDomain','wrongDomain2','suspendedPurchase','inactivePurchase','suspended']) assert.equal((await call(uid,'GET')).status,403);
  for (const role of ['coo','director']) assert.equal((await call(role,'POST','',data)).status,403);
+ // Purchases must belong to an existing, approved project.
+ assert.equal((await call('purchase','POST','',{...data,projectNumber:''})).status,400);
+ assert.equal((await call('purchase','POST','',{...data,projectNumber:'NOPE'})).status,400);
+ assert.equal((await call('purchase','POST','',{...data,projectNumber:'EB-2'})).status,409);
  assert.equal((await call('purchase','POST','',{...data,amount:-1})).status,400);
  assert.equal((await call('purchase','POST','',{...data,requiredBy:'2026-02-30'})).status,400);
  let response=await call('purchase','POST','',data);assert.equal(response.status,201);
  const initial=(await response.json()).data,path='/'+initial.id;
+ assert.equal(initial.projectNumber,'EB-1');assert.equal(initial.project,'Project Alpha');assert.equal(initial.projectId,'pp1');
  assert.equal(initial.approval.status,'pending');assert.equal(initial.pendingChange.kind,'initial');
  assert.equal((await call('purchase','POST',path+'/decision',{version:1,decision:'approved'})).status,403);
  assert.equal((await call('director','POST',path+'/decision',{version:1,decision:'rejected'})).status,400);
