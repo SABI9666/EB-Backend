@@ -51,6 +51,18 @@ Deploy backend first, then the matching frontend update. Old clients will need a
 
 ## Projects and daily site logs
 
+### Project-first workflow
+
+The purchase portal opens on **1 · Projects & Site Logs**. Work runs in this order:
+
+1. Create the project: number, client, client PO / work order, client contact, value, dates and scope.
+2. COO / Director approve the project. This fixes the initial sales value.
+3. Raise purchase requests under the approved project, using **+ Purchase request** on the project or **2 · Purchase Requests**.
+4. COO / Director approve each request and each later edit, document and stage step.
+5. Record daily material, manpower and machinery costs on the project.
+
+The server requires every new purchase request, and every edit, to reference an existing project number. That project must have been approved at least once. New requests are refused for completed or cancelled projects. Edits are refused for cancelled projects. The server sets the project name and `projectId` from the project. Legacy purchases without a project must be linked to one the next time they are edited. Inside a project, the *Purchase requests* tab lists linked requests with their approval state and pending operation. From there, Purchase can view, edit, add a quote, add a P.O. or add a document, and COO / Director can review and approve.
+
 The Purchase portal has a **Projects & Site Logs** workspace (`/api/purchase-projects`, collection `purchase_projects`). Purchase portal projects are separate from BDM sales.
 
 - **Project register.** Purchase staff create a project with:
