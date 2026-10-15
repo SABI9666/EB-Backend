@@ -77,7 +77,7 @@ async function verifyToken(req, res, next) {
       return res.status(403).json({ success: false, error: 'This account is not authorized for the Purchase portal.' });
     }
     // Keep Purchase identities out of APIs whose legacy handlers accept any role.
-    if (resolvedRole === 'purchase' && !/^\/api\/purchases(?:\/|\?|$)/.test(req.originalUrl)) {
+    if (resolvedRole === 'purchase' && !/^\/api\/purchase(?:s|-projects)(?:\/|\?|$)/.test(req.originalUrl)) {
       return res.status(403).json({ success: false, error: 'Purchase accounts can only access purchase management.' });
     }
 

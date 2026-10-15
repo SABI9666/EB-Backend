@@ -48,3 +48,19 @@ Under `/api/purchases`: GET/POST `/`, GET/PUT `/:id`, POST `/:id/documents`, GET
 Frontend jsdom checks cover both manager roles, visible row actions, current/proposed details, rejection validation, edit/delete/upload request payloads and pending locks. Live Firebase rules, production accounts and cloud deployment are not exercised by these tests.
 
 Deploy backend first, then the matching frontend update. Old clients will need a refresh: uploads now require a version and every upload is sent for review.
+
+## Projects and daily site logs
+
+The Purchase portal has a **Projects & Site Logs** workspace (`/api/purchase-projects`, collection `purchase_projects`).
+
+- **Project register.** Purchase staff create a project with a unique project number (fixed once created), name, client, location, manager, project / PO value, currency, award / PO date, start and planned completion, status (active, on hold, completed, cancelled) and a "count in sales" flag. A new project and every later header edit go to COO / Director for approval. Edits apply to the record at once with a required reason, but sales keep the last approved snapshot (`sales`) until the edit is approved.
+- **Daily logs.** Each project takes dated entries recorded directly by Purchase. Amounts are computed by the server in the project currency:
+  - Material: quantity × rate (with unit, supplier, DC / invoice reference)
+  - Manpower: workers × rate per man-day (with trade, hours each, contractor); man-days and man-hours are tracked
+  - Machinery: units × hours × rate per hour (with owner / supplier); machine-hours are tracked
+  Future dates are rejected. Completed or cancelled projects take no new entries. Removing an entry needs a reason. The entry stays in history but no longer counts in totals. Running totals are kept on the project document in the same transaction.
+- **Linking purchases.** The purchase form has an optional project number selector. Linked purchases show on the project report.
+- **Reports.** COO / Director open *Project Cost Reports* from Procurement or the Reports Center. The project-wise summary shows contract value, material, manpower, machinery, cost to date, cost % of value and balance. A project report has KPIs, a cost breakdown, a date filter (this week / month / custom), and daily summary, material, manpower, machinery, linked purchase and activity tabs. Approve / reject, CSV export and print / PDF are available there.
+- **Sales.** Approved projects with "count in sales" (and not cancelled) are added to the Sales Revenue Monitor as source `purchase` and kind `won`, at the approved value and award / PO date. They therefore appear in weekly / monthly booked sales. COO / Director can open the Sales Revenue Monitor from Corporate → Sales or the Reports Center. These values are not deduplicated against project records or BDM uploads.
+
+Validation: `npm run test:purchase-projects`. Frontend fixture test: `node test/purchase-projects.cjs` in eb-traker (Playwright).

@@ -24,7 +24,8 @@ function text(value, name, max, required = false) {
 function fields(body) {
     const out = {};
     for (const key of ['project', 'item', 'qty']) out[key] = text(body[key], key, 200, true);
-    for (const key of ['vendor', 'reference', 'specification', 'paymentReference']) out[key] = text(body[key] ?? '', key, key === 'specification' ? 4000 : 200);
+    for (const key of ['projectNumber', 'vendor', 'reference', 'specification', 'paymentReference']) out[key] = text(body[key] ?? '', key, key === 'specification' ? 4000 : 200);
+    out.projectNumber = out.projectNumber.toUpperCase();
     out.currency = text(body.currency, 'currency', 3, true).toUpperCase();
     if (!['INR', 'USD', 'CAD', 'AUD', 'GBP', 'EUR'].includes(out.currency)) throw fail(400, 'Unsupported currency');
     if (typeof body.amount !== 'number' || !Number.isFinite(body.amount) || body.amount < 0 || body.amount > 1e12) throw fail(400, 'Invalid amount');
@@ -89,7 +90,7 @@ router.put('/:id', requireRole('purchase'), wrap(async (req, res) => {
         if (record.stage === 'closed') throw fail(409, 'Closed purchases cannot be edited');
         if (STAGES.indexOf(req.body.stage) >= STAGES.indexOf('po') && record.approval?.status !== 'approved') throw fail(409, 'Initial approval is required before later process stages.');
         if (req.body.stage === 'closed' && !data.paymentReference) throw fail(400, 'Payment / closure reference is required to close');
-        if (Object.keys(data).every(k => data[k] === record[k]) && req.body.stage === record.stage) throw fail(400, 'No changes to submit');
+        if (Object.keys(data).every(k => data[k] === (record[k] ?? '')) && req.body.stage === record.stage) throw fail(400, 'No changes to submit');
         queueChange(tx, ref, record, req, { kind: 'edit', data, stage: req.body.stage, note });
     });
     res.json({ success: true });
@@ -148,7 +149,7 @@ router.post('/:id/decision', requireRole(['coo', 'director']), wrap(async (req, 
         tx.update(ref, updates);
         event(tx, ref, req, req.body.decision + '_' + change.kind, {
             from: record.stage, to: updates.stage, note: [change.note, note].filter(Boolean).join(' — '),
-            changed: change.data ? Object.keys(change.data).filter(k => change.data[k] !== record[k]).map(field => ({ field, before: record[field] ?? '', after: change.data[field] })) : [],
+            changed: change.data ? Object.keys(change.data).filter(k => change.data[k] !== (record[k] ?? '')).map(field => ({ field, before: record[field] ?? '', after: change.data[field] })) : [],
             documentId: change.documentId || null
         });
     });
