@@ -196,6 +196,7 @@ try {
     app.use('/api/sample-projects', sampleProjectsHandler);
     app.use('/api/sales-monitor', require('./api/sales-monitor'));
     app.use('/api/purchases', require('./api/purchases'));
+    app.use('/api/purchase-projects', require('./api/purchase-projects'));
     app.use('/api/estimation-reports', require('./api/estimation-reports'));
 
     console.log('✅ All routes registered');

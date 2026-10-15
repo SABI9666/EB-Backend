@@ -48,3 +48,47 @@ Under `/api/purchases`: GET/POST `/`, GET/PUT `/:id`, POST `/:id/documents`, GET
 Frontend jsdom checks cover both manager roles, visible row actions, current/proposed details, rejection validation, edit/delete/upload request payloads and pending locks. Live Firebase rules, production accounts and cloud deployment are not exercised by these tests.
 
 Deploy backend first, then the matching frontend update. Old clients will need a refresh: uploads now require a version and every upload is sent for review.
+
+## Projects and daily site logs
+
+The Purchase portal has a **Projects & Site Logs** workspace (`/api/purchase-projects`, collection `purchase_projects`). Purchase portal projects are separate from BDM sales.
+
+- **Project register.** Purchase staff create a project with:
+  - a unique project number, fixed once created
+  - name, client, location and manager
+  - project / PO value and currency, and the award / PO date
+  - planned start and planned completion dates
+  - actual completion date, required when the status is completed
+  - status: active, on hold, completed or cancelled
+  - a "count in sales" flag
+
+  A new project and every later header edit go to COO / Director for approval. Edits apply at once and need a reason.
+- **Initial sales value.** The first approval fixes `initialSales`: the value, currency and award date approved at that time. Later edits and approvals never change it. They only decide whether the project still counts: "count in sales" ticked and the project not cancelled. `sales` holds what the sales monitor reads.
+- **Daily logs.** Each project takes dated entries recorded directly by Purchase. Amounts are computed by the server in the project currency:
+  - Material: quantity × rate (with unit, supplier and DC / invoice reference)
+  - Manpower: workers × rate per man-day (with trade, hours each and contractor); man-days and man-hours are tracked
+  - Machinery: units × hours × rate per hour (with owner / supplier); machine-hours are tracked
+
+  Future dates are rejected. Completed or cancelled projects take no new entries. Removing an entry needs a reason; the entry stays in history but is excluded from totals.
+- **Linking purchases.** The purchase form has an optional project number selector.
+
+### Sales portal
+
+The Sales Revenue Monitor shows purchase portal projects as their own source (`purchase`, kind `purchase`). It shows only the initial sales value, at the award / PO date, with no cost figures. These rows are not attributed to any BDM:
+- They are excluded from BDM performance, win rate, pipeline and average deal size.
+- They are listed in a separate "Purchase portal projects" section.
+- They are added to booked sales and shown as their own column in the weekly / monthly and quarterly sales tables.
+
+COO / Director can also open the Sales Revenue Monitor (Corporate → Sales, or the Reports Center). Values are not deduplicated against BDM uploads or project records.
+
+### COO / Director reports
+
+These reports are reached from Procurement or the Reports Center.
+
+- **Project-wise Report.** The project list has *Cost report* and *Schedule report* views, with CSV export and print / PDF. Each project report shows the initial sales value and the current contract value, KPIs, a cost breakdown and a date filter. It has these tabs:
+  - *Cost report*: financial summary (initial sales value, revision, cost, balance, margin, approved purchase commitments), cost by category, monthly cost with cumulative % of value, material consumption, manpower by trade and machinery by equipment.
+  - *Schedule report*: planned versus actual dates, duration, elapsed and remaining days, and time elapsed versus cost consumed. It flags a project "at risk" when cost runs more than 15 points ahead of time, and "overdue" after planned completion. It includes weekly site activity, showing idle weeks.
+  - Daily summary, material, manpower, machinery, linked purchases and activity history.
+- **Purchase Report.** The purchase register is filtered by project, stage, approval / overdue, created date and search. It has KPIs, stage-wise, project-wise and vendor-wise summaries, overdue requirements and the full register. Values stay in their own currency. CSV export and print / PDF are available.
+
+Validation: `npm run test:purchase-projects`. Frontend fixture tests in eb-traker (Playwright): `node test/purchase-projects.cjs` and `node test/sales-monitor.cjs`.
