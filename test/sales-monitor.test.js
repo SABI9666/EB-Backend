@@ -9,22 +9,22 @@ const fixture = {
     variations: [{ id: 'v1', parentProjectId: 'project1', status: 'approved', approvedValue: 0, value: 20, currency: 'CAD', approvedAt: '2026-10-02' }, { id: 'v2', parentProjectId: 'project1', status: 'pending', value: 50 }],
     entries: [{ id: 'entry1', type: 'won', bdmEmail: 'ALICE@example.com', value: 100, currency: 'USD', date: '2026-10-01', projectName: 'Bridge' }]
 };
-test('report uses linked proposal PO, counts a win once, separates currencies and manual uploads', () => {
+test('BDM figures come only from Upload Quote / Won entries, never from proposals or project records', () => {
     const { rows } = buildReport(fixture);
-    const won = rows.filter(r => r.source === 'projects' && r.kind === 'won');
-    assert.equal(won.length, 1); assert.equal(won[0].value, 100); assert.equal(won[0].currency, 'CAD');
-    assert.equal(won[0].date, '2026-10-01'); assert.equal(won[0].bdmName, 'Alice');
-    const variations = rows.filter(r => r.kind === 'variation');
-    assert.equal(variations.length, 1); assert.equal(variations[0].value, 0);
-    const manual = rows.find(r => r.source === 'manual');
-    assert.equal(manual.bdmUid, 'alice'); assert.equal(manual.value, 100); assert.equal(manual.currency, 'USD');
-    assert.equal(rows.filter(r => r.kind === 'quote').length, 1);
+    assert.equal(rows.length, 1);
+    assert.deepEqual([rows[0].source, rows[0].kind, rows[0].bdmUid, rows[0].value, rows[0].currency, rows[0].date], ['manual', 'won', 'alice', 100, 'USD', '2026-10-01']);
+    assert.equal(rows.filter(r => r.kind === 'quote').length, 0);
 });
-test('unconverted wins, missing metadata, zero values and unassigned BDM remain visible', () => {
-    const data = buildReport({ users: [], projects: [], variations: [], entries: [], proposals: [{ id: 'p', status: 'won', poValue: 0 }] });
-    assert.equal(data.rows.length, 1);
-    assert.equal(data.rows[0].value, 0); assert.equal(data.rows[0].date, null);
-    assert.equal(data.rows[0].currency, 'UNSPECIFIED'); assert.equal(data.rows[0].bdmUid, 'unassigned');
+test('uploaded quotes, wins and variations are kept; other entry types and missing metadata stay visible', () => {
+    const entries = [
+        { id: 'q', type: 'quote', bdmUid: 'alice', value: 500, currency: 'INR', date: '2026-10-03' },
+        { id: 'v', type: 'variation', bdmUid: 'alice', value: '25', currency: 'inr', date: '2026-10-04' },
+        { id: 'x', type: 'note', bdmUid: 'alice', value: 999 },
+        { id: 'w', type: 'won', value: 0 }
+    ];
+    const { rows } = buildReport({ users: fixture.users, entries });
+    assert.deepEqual(rows.map(r => [r.kind, r.value, r.currency]), [['quote', 500, 'INR'], ['variation', 25, 'INR'], ['won', 0, 'UNSPECIFIED']]);
+    assert.equal(rows[2].date, null); assert.equal(rows[2].bdmUid, 'unassigned');
 });
 test('approved purchase projects are a separate, non-BDM source at their initial sales value', () => {
     const purchaseProjects = [
@@ -73,7 +73,7 @@ test('API only allows intended monitoring identities and rejects every sales mut
     for (const token of ['sales', 'mixed', 'coo', 'director']) {
         const response = await call(token); assert.equal(response.status, 200, token);
         assert.equal(response.headers.get('cache-control'), 'no-store');
-        const result = await response.json(); assert.equal(result.data.rows.length, 4);
+        const result = await response.json(); assert.equal(result.data.rows.length, 1);
     }
     for (const token of ['forged', 'suspended', 'bdm', 'purchase']) assert.equal((await call(token)).status, 403, token);
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']) assert.equal((await call('sales', 'sales-monitor', method)).status, 403, method);
