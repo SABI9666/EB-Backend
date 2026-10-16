@@ -9,11 +9,24 @@ const fixture = {
     variations: [{ id: 'v1', parentProjectId: 'project1', status: 'approved', approvedValue: 0, value: 20, currency: 'CAD', approvedAt: '2026-10-02' }, { id: 'v2', parentProjectId: 'project1', status: 'pending', value: 50 }],
     entries: [{ id: 'entry1', type: 'won', bdmEmail: 'ALICE@example.com', value: 100, currency: 'USD', date: '2026-10-01', projectName: 'Bridge' }]
 };
-test('BDM figures come only from Upload Quote / Won entries, never from proposals or project records', () => {
+test('BDM figures use uploads; proposal quotes and proposal wins from April 2026 are not read', () => {
     const { rows } = buildReport(fixture);
     assert.equal(rows.length, 1);
     assert.deepEqual([rows[0].source, rows[0].kind, rows[0].bdmUid, rows[0].value, rows[0].currency, rows[0].date], ['manual', 'won', 'alice', 100, 'USD', '2026-10-01']);
     assert.equal(rows.filter(r => r.kind === 'quote').length, 0);
+});
+test('proposals marked won from Dec 2025 to Mar 2026 are added once, at PO value', () => {
+    const proposals = [
+        { id: 'p1', status: 'won', wonDate: '2026-02-10', createdByUid: 'alice', poValue: 300, poCurrency: 'INR', pricing: { quoteValue: 400, currency: 'INR' } },
+        { id: 'p2', status: 'won', wonDate: '2025-12-01', createdByUid: 'alice', pricing: { quoteValue: 50, currency: 'USD' } },
+        { id: 'p3', status: 'won', wonDate: '2025-11-30', createdByUid: 'alice', poValue: 1 },
+        { id: 'p4', status: 'won', wonDate: '2026-04-01', createdByUid: 'alice', poValue: 1 },
+        { id: 'p5', status: 'won', createdByUid: 'alice', poValue: 1 }
+    ];
+    const projects = [{ id: 'proj1', proposalId: 'p1', bdmUid: 'alice', projectName: 'Shed' }];
+    const rows = buildReport({ users: fixture.users, entries: [], projects, proposals }).rows;
+    assert.deepEqual(rows.map(r => [r.source, r.kind, r.projectName, r.value, r.currency, r.date, r.bdmUid]),
+        [['proposals', 'won', 'Shed', 300, 'INR', '2026-02-10', 'alice'], ['proposals', 'won', 'Unnamed project', 50, 'USD', '2025-12-01', 'alice']]);
 });
 test('uploaded quotes, wins and variations are kept; other entry types and missing metadata stay visible', () => {
     const entries = [
