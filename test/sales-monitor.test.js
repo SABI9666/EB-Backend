@@ -28,6 +28,16 @@ test('proposals marked won from Dec 2025 to Mar 2026 are added once, at PO value
     assert.deepEqual(rows.map(r => [r.source, r.kind, r.projectName, r.value, r.currency, r.date, r.bdmUid]),
         [['proposals', 'won', 'Shed', 300, 'INR', '2026-02-10', 'alice'], ['proposals', 'won', 'Unnamed project', 50, 'USD', '2025-12-01', 'alice']]);
 });
+test('proposal chart data: won proposals from Dec 2025 at quoted value, as in COO analytics', () => {
+    const proposals = [
+        { id: 'a', status: 'won', wonDate: '2026-05-02', createdByName: 'Alice A', pricing: { quoteValue: 400 } },
+        { id: 'b', status: 'won', updatedAt: '2025-12-20', createdByUid: 'alice' },
+        { id: 'c', status: 'won', wonDate: '2025-11-30', createdByName: 'Old', pricing: { quoteValue: 9 } },
+        { id: 'd', status: 'lost', wonDate: '2026-05-02', pricing: { quoteValue: 9 } }
+    ];
+    assert.deepEqual(buildReport({ users: fixture.users, entries: [], proposals }).proposalWins,
+        [{ date: '2026-05-02', bdmName: 'Alice A', value: 400 }, { date: '2025-12-20', bdmName: 'Alice', value: 0 }]);
+});
 test('uploaded quotes, wins and variations are kept; other entry types and missing metadata stay visible', () => {
     const entries = [
         { id: 'q', type: 'quote', bdmUid: 'alice', value: 500, currency: 'INR', date: '2026-10-03' },
