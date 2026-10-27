@@ -297,6 +297,8 @@ const handler = async (req, res) => {
             const proposal = proposalDoc.data();
             let updates = {};
             let activityDetail = '';
+            // Logged action name; a P.O. update through mark_won is recorded as update_po, not as another win.
+            let logAction = action;
             
             switch (action) {
                 case 'add_estimation':
@@ -658,6 +660,7 @@ const handler = async (req, res) => {
                             poUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
                         };
                         activityDetail = `P.O. details updated (P.O. ${poNumber}, ${poCurrency} ${poValue})`;
+                        logAction = 'update_po';
                         break;
                     }
 
@@ -913,16 +916,16 @@ const handler = async (req, res) => {
             
             updates.changeLog = admin.firestore.FieldValue.arrayUnion({ 
                 timestamp: new Date().toISOString(), 
-                action: action, 
+                action: logAction, 
                 performedByName: req.user.name, 
-                details: `${action.replace(/_/g, ' ')} completed` 
+                details: activityDetail || `${logAction.replace(/_/g, ' ')} completed` 
             });
             updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
             
             await proposalRef.update(updates);
             
             await db.collection('activities').add({
-                type: `proposal_${action}`, 
+                type: `proposal_${logAction}`, 
                 details: activityDetail, 
                 performedByName: req.user.name, 
                 performedByRole: req.user.role,
@@ -951,6 +954,10 @@ const handler = async (req, res) => {
             const proposalData = proposalDoc.data();
             if (proposalData.createdByUid !== req.user.uid && req.user.role !== 'director') {
                 return res.status(403).json({ success: false, error: 'You are not authorized to delete this proposal.' });
+            }
+            // A won proposal that already became a project is not deleted from here (the project would be orphaned).
+            if (proposalData.projectCreated && proposalData.projectId && req.user.role !== 'director') {
+                return res.status(409).json({ success: false, error: 'A project has already been created from this proposal. Ask the COO or Director to remove it.' });
             }
 
             const filesSnapshot = await db.collection('files').where('proposalId', '==', id).get();
