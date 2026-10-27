@@ -10,6 +10,7 @@
     "test:purchases": "node --test test/purchases.test.js",
     "test:estimation": "node --test test/estimation-reports.test.js",
     "test:sales": "node --test test/sales-monitor.test.js",
+    "test:proposals": "node --test test/proposal-rules.test.js test/proposals-won.test.js",
     "test:subvendors": "node --test test/subventors.test.js",
     "test:purchase-projects": "node --test test/purchase-projects.test.js"
   },
