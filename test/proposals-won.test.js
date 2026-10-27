@@ -9,18 +9,19 @@ const collection = name => ({
     doc: id => ({
         get: async () => ({ exists: name === 'proposals' && docs.has(id), id, data: () => docs.get(id) }),
         delete: async () => { deleted.push(id); docs.delete(id); },
-        update: async updates => { const d = docs.get(id); for (const [k, v] of Object.entries(updates)) d[k] = v && v.__op === 'union' ? [...(d[k] || []), ...v.items] : value(v); }
+        update: async updates => { const d = docs.get(id); for (const [k, v] of Object.entries(updates)) { if (v && v.__op === 'delete') delete d[k]; else d[k] = v && v.__op === 'union' ? [...(d[k] || []), ...v.items] : value(v); } }
     }),
     add: async data => { if (name === 'proposals') { const id = 'new' + docs.size; docs.set(id, data); return { id }; } activity.push(data); return { id: 'x' }; },
     select: () => ({ get: async () => ({ docs: [...docs.entries()].map(([id, d]) => ({ id, data: () => d })) }) }),
     where: () => ({ get: async () => ({ docs: [], empty: true }), limit: () => ({ get: async () => ({ docs: [], empty: true }) }) })
 });
 const firestore = () => ({ collection });
-firestore.FieldValue = { serverTimestamp: () => ({ __op: 'ts' }), arrayUnion: (...items) => ({ __op: 'union', items }) };
+firestore.FieldValue = { delete: () => ({ __op: 'delete' }), serverTimestamp: () => ({ __op: 'ts' }), arrayUnion: (...items) => ({ __op: 'union', items }) };
 firestore.Timestamp = { fromDate: d => d };
 require.cache[require.resolve('../api/_firebase-admin')] = { exports: { firestore, storage: () => ({ bucket: () => ({}) }) } };
 require.cache[require.resolve('../middleware/auth')] = { exports: { verifyToken: (req, res, next) => { req.user = req.testUser; next(); } } };
-require.cache[require.resolve('../api/email')] = { exports: { sendEmailNotification: async () => {} } };
+const emails = [];
+require.cache[require.resolve('../api/email')] = { exports: { sendEmailNotification: async event => { emails.push(event); } } };
 const handler = require('../api/proposals');
 const bdm = { uid: 'sabin', role: 'bdm', name: 'Sabin', email: 's@x' };
 async function call(method, query, body, user = bdm) {
@@ -74,4 +75,32 @@ test('a duplicate can be deleted by its BDM, but not once a project exists', asy
     assert.equal((await call('DELETE', { id: 'd1' }, undefined, { uid: 'gerard', role: 'bdm', name: 'Gerard' })).status, 403);
     assert.equal((await call('DELETE', { id: 'd1' })).status, 200);
     assert.deepEqual(deleted, ['d1']);
+});
+test('removing a repeat WON entry restores the first click date; removing the last one undoes the win', async () => {
+    docs.set('r1', { projectName: 'Data centre', clientCompany: 'Tejjy', status: 'won', createdByUid: 'sabin', submittedToClientAt: 'x',
+        wonDate: new Date('2026-10-27T16:22:00Z'), poNumber: 'po#tejjy', poValue: 53100, poCurrency: 'USD', hasPO: true,
+        changeLog: [{ action: 'created', timestamp: '2026-10-01T08:00:00.000Z' }, { action: 'mark_won', timestamp: '2026-10-15T13:45:00.000Z' }, { action: 'mark_won', timestamp: '2026-10-27T16:22:00.000Z' }] });
+    assert.equal((await call('PUT', { id: 'r1' }, { action: 'remove_won_click', data: { timestamp: '2026-10-27T16:22:00.000Z' } }, { uid: 'gerard', role: 'bdm', name: 'G' })).status, 403);
+    assert.equal((await call('PUT', { id: 'r1' }, { action: 'remove_won_click', data: { timestamp: 'nope' } })).status, 404);
+    const one = await call('PUT', { id: 'r1' }, { action: 'remove_won_click', data: { timestamp: '2026-10-27T16:22:00.000Z' } });
+    assert.equal(one.status, 200, JSON.stringify(one.json));
+    let p = docs.get('r1');
+    assert.equal(p.status, 'won'); assert.equal(p.wonDate.toISOString(), '2026-10-15T13:45:00.000Z');
+    assert.deepEqual(p.changeLog.map(e => e.action), ['created', 'mark_won', 'remove_won_click']);
+    docs.get('r1').projectCreated = true; docs.get('r1').projectId = 'pr';
+    assert.equal((await call('PUT', { id: 'r1' }, { action: 'remove_won_click', data: { timestamp: '2026-10-15T13:45:00.000Z' } })).status, 409, 'cannot undo a win that became a project');
+    delete docs.get('r1').projectCreated;
+    const last = await call('PUT', { id: 'r1' }, { action: 'remove_won_click', data: { timestamp: '2026-10-15T13:45:00.000Z' } });
+    assert.equal(last.status, 200);
+    p = docs.get('r1');
+    assert.deepEqual([p.status, p.wonDate, p.poNumber, p.poValue, p.hasPO], ['submitted_to_client', undefined, undefined, undefined, undefined]);
+    assert.equal((await call('PUT', { id: 'r1' }, { action: 'remove_won_click', data: {} })).status, 400, 'no longer won');
+});
+test('only the first WON sends the "Project won" email; P.O. updates and won date edits send none', async () => {
+    docs.set('e1', { projectName: 'Mail test', clientCompany: 'Zed', status: 'submitted_to_client', createdByUid: 'sabin' });
+    emails.length = 0;
+    assert.equal((await call('PUT', { id: 'e1' }, { action: 'mark_won', data: { poNumber: 'PO-MAIL', poValue: 5, wonDate: '2026-10-10' } })).status, 200);
+    assert.equal((await call('PUT', { id: 'e1' }, { action: 'mark_won', data: { poUpdated: true, poNumber: 'PO-MAIL', poValue: 6 } })).status, 200);
+    assert.equal((await call('PUT', { id: 'e1' }, { action: 'update_won_date', data: { wonDate: '2026-10-11' } })).status, 200);
+    assert.deepEqual(emails, ['project.won']);
 });

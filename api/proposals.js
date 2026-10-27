@@ -698,6 +698,7 @@ const handler = async (req, res) => {
 
                 case 'update_won_date': {
                     // The BDM who won the proposal (or COO / Director) corrects the won date; history is kept.
+                    // No email is sent: the "Project won" email goes out only when the proposal is first marked won.
                     if (!((req.user.role === 'bdm' && proposal.createdByUid === req.user.uid) || ['coo', 'director'].includes(req.user.role))) {
                         return res.status(403).json({ success: false, error: 'Only the BDM who won this proposal, COO or Director can change the won date' });
                     }
@@ -720,6 +721,44 @@ const handler = async (req, res) => {
                         wonDateHistory: admin.firestore.FieldValue.arrayUnion({ from: previousText, to: parsed.text, by: req.user.name, at: new Date().toISOString() })
                     };
                     activityDetail = `Won date changed from ${previousText} to ${parsed.text}`;
+                    break;
+                }
+
+                case 'remove_won_click': {
+                    // Remove one recorded "Won" click (data.timestamp). Removing the last one undoes the win.
+                    if (!((req.user.role === 'bdm' && proposal.createdByUid === req.user.uid) || ['coo', 'director'].includes(req.user.role))) {
+                        return res.status(403).json({ success: false, error: 'Only the BDM who won this proposal, COO or Director can remove a WON entry' });
+                    }
+                    if (proposal.status !== 'won') {
+                        return res.status(400).json({ success: false, error: 'This proposal is not marked as WON' });
+                    }
+                    const log = Array.isArray(proposal.changeLog) ? proposal.changeLog : [];
+                    const target = data && data.timestamp ? log.find(e => e && e.action === 'mark_won' && e.timestamp === data.timestamp) : null;
+                    if (data && data.timestamp && !target) {
+                        return res.status(404).json({ success: false, error: 'That WON entry was not found; refresh and try again' });
+                    }
+                    const remaining = log.filter(e => e && e.action === 'mark_won' && e !== target);
+                    const undo = !remaining.length;
+                    if (undo && proposal.projectCreated && proposal.projectId) {
+                        return res.status(409).json({ success: false, error: 'A project has already been created from this win, so it cannot be undone here. Ask the COO or Director.' });
+                    }
+                    const fmt = iso => (iso ? String(iso).slice(0, 16).replace('T', ' ') : 'unrecorded');
+                    activityDetail = undo
+                        ? `WON removed${target ? ` (click of ${fmt(target.timestamp)})` : ''}; proposal returned to ${proposal.submittedToClientAt ? 'submitted to client' : 'approved'}`
+                        : `Repeat WON entry of ${fmt(target.timestamp)} removed`;
+                    // The full log is rewritten here, so the generic log append below is skipped for this action.
+                    updates.changeLog = log.filter(e => e !== target).concat({ timestamp: new Date().toISOString(), action: 'remove_won_click', performedByName: req.user.name, details: activityDetail });
+                    if (undo) {
+                        const del = admin.firestore.FieldValue.delete();
+                        Object.assign(updates, { status: proposal.submittedToClientAt ? 'submitted_to_client' : 'approved',
+                            wonDate: del, poNumber: del, poValue: del, poCurrency: del, poDetails: del, hasPO: del, poAddedBy: del, poAddedByUid: del, poAddedAt: del,
+                            wonDateEdited: del, wonDateEditedBy: del, wonDateEditedAt: del, wonRemovedBy: req.user.name, wonRemovedAt: admin.firestore.FieldValue.serverTimestamp() });
+                    } else if (!proposal.wonDateEdited) {
+                        // The won date follows the earliest remaining click (a repeat click had reset it), unless the BDM set it by hand.
+                        const first = remaining.map(e => e.timestamp).sort()[0];
+                        const firstDate = new Date(first);
+                        if (Number.isFinite(firstDate.getTime())) updates.wonDate = admin.firestore.Timestamp.fromDate(firstDate);
+                    }
                     break;
                 }
 
@@ -914,7 +953,7 @@ const handler = async (req, res) => {
                     return res.status(400).json({ success: false, error: 'Invalid action: ' + action });
             }
             
-            updates.changeLog = admin.firestore.FieldValue.arrayUnion({ 
+            if (!updates.changeLog) updates.changeLog = admin.firestore.FieldValue.arrayUnion({ 
                 timestamp: new Date().toISOString(), 
                 action: logAction, 
                 performedByName: req.user.name, 
