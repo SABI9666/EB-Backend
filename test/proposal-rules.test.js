@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { findDuplicateProposal, findDuplicatePo, parseWonDate } = require('../lib/proposal-rules');
+const { findDuplicateProposal, findSameProject, parseWonDate } = require('../lib/proposal-rules');
 
 const list = [
     { id: 'a', projectName: 'Bridge  Expansion – Phase 1', clientCompany: 'ACME Ltd.', status: 'submitted_to_client' },
@@ -15,10 +15,9 @@ test('same project and client is a duplicate, ignoring case, spacing and punctua
 test('lost / rejected proposals do not block a new one', () => {
     assert.equal(findDuplicateProposal(list, { projectName: 'old shed', clientCompany: 'ACME' }), null);
 });
-test('a P.O. number can be on one won proposal only', () => {
-    assert.equal(findDuplicatePo(list, 'po 2026 001').id, 'c');
-    assert.equal(findDuplicatePo(list, 'PO-2026/001', 'c'), null, 'updating its own P.O. is fine');
-    assert.equal(findDuplicatePo(list, 'PO-9'), null);
+test('same-project lookup returns every other status, matched loosely', () => {
+    assert.deepEqual(findSameProject(list, { projectName: 'old shed', clientCompany: 'acme' }).map(p => p.id), ['b'], 'lost ones are listed too');
+    assert.deepEqual(findSameProject(list, { projectName: 'Bridge Expansion Phase 1', clientCompany: 'Acme Ltd' }, 'a'), []);
 });
 test('won date must be a real, non-future date', () => {
     const now = new Date('2026-10-27T10:00:00Z');
