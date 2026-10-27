@@ -3,6 +3,7 @@ const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
 const { sendEmailNotification } = require('./email');
+const { findDuplicateProposal, findDuplicatePo, parseWonDate } = require('../lib/proposal-rules');
 
 const db = admin.firestore();
 const bucket = admin.storage().bucket();
@@ -177,6 +178,11 @@ const handler = async (req, res) => {
             return res.status(200).json({ success: true, data: proposals });
         }
 
+        // Light read of every proposal for duplicate checks (project / client / P.O. number only).
+        const proposalIndex = async () => (await db.collection('proposals')
+            .select('projectName', 'clientCompany', 'status', 'poNumber', 'poDetails', 'createdByName').get())
+            .docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
         // ============================================
         // POST - Create proposal
         // ============================================
@@ -203,6 +209,13 @@ const handler = async (req, res) => {
                     success: false, 
                     error: 'Missing required fields: projectName, clientCompany, and description are required' 
                 });
+            }
+
+            // Block a second open proposal for the same project and client (double submits included).
+            const duplicate = findDuplicateProposal(await proposalIndex(), { projectName, clientCompany });
+            if (duplicate) {
+                return res.status(409).json({ success: false, error: `A proposal for "${duplicate.projectName}" (${duplicate.clientCompany}) already exists` +
+                    `${duplicate.createdByName ? ' by ' + duplicate.createdByName : ''} with status ${String(duplicate.status || 'draft').replace(/_/g, ' ')}. Open that proposal instead of creating a new one.`, duplicateId: duplicate.id });
             }
 
             const proposalData = {
@@ -598,6 +611,22 @@ const handler = async (req, res) => {
                     if (isNaN(poValue) || poValue <= 0) {
                         return res.status(400).json({ success: false, error: 'Valid P.O. Value is required' });
                     }
+                    // A proposal is marked won once. Later calls (the "Update P.O." button) only change the
+                    // P.O. details and keep the original won date; a repeated "Won" click is refused.
+                    const isPoUpdate = proposal.status === 'won';
+                    if (isPoUpdate && !(data && data.poUpdated)) {
+                        return res.status(409).json({ success: false, error: 'This proposal is already marked as WON. Use "Update P.O." to change the P.O. details or "Edit won date" to change the date.' });
+                    }
+                    const samePo = findDuplicatePo(await proposalIndex(), poNumber, id);
+                    if (samePo) {
+                        return res.status(409).json({ success: false, error: `P.O. number ${poNumber} is already recorded on the won proposal "${samePo.projectName}". Each P.O. can be entered once.` });
+                    }
+                    let chosenWonDate = null;
+                    if (!isPoUpdate && data && data.wonDate) {
+                        const parsed = parseWonDate(data.wonDate);
+                        if (parsed.error) return res.status(400).json({ success: false, error: parsed.error });
+                        chosenWonDate = parsed.date;
+                    }
 
                     // Optional extras supplied by BDM (tracking + attachment)
                     const trackingNumber = (data && data.trackingNumber) ? String(data.trackingNumber).trim() : '';
@@ -618,9 +647,23 @@ const handler = async (req, res) => {
                         uploadedAt: new Date().toISOString()
                     };
 
+                    if (isPoUpdate) {
+                        updates = {
+                            poNumber: poNumber,
+                            poValue: poValue,
+                            poCurrency: poCurrency,
+                            poDetails: poDetails,
+                            hasPO: true,
+                            poUpdatedBy: req.user.name,
+                            poUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+                        };
+                        activityDetail = `P.O. details updated (P.O. ${poNumber}, ${poCurrency} ${poValue})`;
+                        break;
+                    }
+
                     updates = {
                         status: 'won',
-                        wonDate: admin.firestore.FieldValue.serverTimestamp(),
+                        wonDate: chosenWonDate ? admin.firestore.Timestamp.fromDate(chosenWonDate) : admin.firestore.FieldValue.serverTimestamp(),
                         poNumber: poNumber,
                         poValue: poValue,
                         poCurrency: poCurrency,
@@ -647,6 +690,33 @@ const handler = async (req, res) => {
                         }).catch(e => console.error('Project won email failed:', e.message));
                     } catch (e) { console.error('Error preparing project won email:', e.message); }
 
+                    break;
+                }
+
+                case 'update_won_date': {
+                    // The BDM who won the proposal (or COO / Director) corrects the won date; history is kept.
+                    if (!((req.user.role === 'bdm' && proposal.createdByUid === req.user.uid) || ['coo', 'director'].includes(req.user.role))) {
+                        return res.status(403).json({ success: false, error: 'Only the BDM who won this proposal, COO or Director can change the won date' });
+                    }
+                    if (proposal.status !== 'won') {
+                        return res.status(400).json({ success: false, error: 'Only a WON proposal has a won date to edit' });
+                    }
+                    const parsed = parseWonDate(data && data.wonDate);
+                    if (parsed.error) return res.status(400).json({ success: false, error: parsed.error });
+                    const toDay = ts => ts && (ts.toDate ? ts.toDate() : new Date(ts._seconds != null ? ts._seconds * 1000 : ts.seconds != null ? ts.seconds * 1000 : ts));
+                    const previous = toDay(proposal.wonDate);
+                    const previousText = previous && Number.isFinite(previous.getTime()) ? previous.toISOString().slice(0, 10) : 'not set';
+                    if (previousText === parsed.text) {
+                        return res.status(400).json({ success: false, error: 'The won date is already ' + parsed.text });
+                    }
+                    updates = {
+                        wonDate: admin.firestore.Timestamp.fromDate(parsed.date),
+                        wonDateEdited: true,
+                        wonDateEditedBy: req.user.name,
+                        wonDateEditedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        wonDateHistory: admin.firestore.FieldValue.arrayUnion({ from: previousText, to: parsed.text, by: req.user.name, at: new Date().toISOString() })
+                    };
+                    activityDetail = `Won date changed from ${previousText} to ${parsed.text}`;
                     break;
                 }
 
@@ -686,6 +756,11 @@ const handler = async (req, res) => {
                         projectLinks: data.projectLinks || proposal.projectLinks || [],
                         services: data.services || proposal.services || []
                     };
+                    // Renaming must not turn this proposal into a copy of another open one.
+                    const renamedDuplicate = findDuplicateProposal(await proposalIndex(), updates, id);
+                    if (renamedDuplicate) {
+                        return res.status(409).json({ success: false, error: `Another proposal for "${renamedDuplicate.projectName}" (${renamedDuplicate.clientCompany}) already exists. Use that proposal instead.` });
+                    }
                     activityDetail = `Proposal updated: ${updates.projectName}`;
                     break;
 

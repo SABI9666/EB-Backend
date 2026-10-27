@@ -34,6 +34,18 @@ test('won without pricing falls back to P.O. value; won date falls back to last 
     const won = rows.filter(r => r.kind === 'won').map(r => [r.value, r.currency, r.date, r.status, r.bdmUid]);
     assert.deepEqual(won, [[40, 'USD', '2026-01-05', 'won · P.O. value (not priced)', 'unassigned'], [53100, 'USD', '2026-02-01', 'won', 'unassigned'], [null, 'UNSPECIFIED', null, 'won · no value', 'unassigned']]);
 });
+test('repeat wins of the same project / client or P.O. are flagged, not dropped; edited won dates are marked', () => {
+    const { rows } = buildReport({ users: fixture.users, proposals: [
+        { id: 'w1', status: 'won', createdByUid: 'alice', projectName: 'Bridge', clientCompany: 'Acme', poNumber: 'PO-1', wonDate: '2026-03-01', pricing: { quoteValue: 10, currency: 'USD' } },
+        { id: 'w2', status: 'won', createdByUid: 'alice', projectName: 'bridge ', clientCompany: 'ACME', poNumber: 'PO-2', wonDate: '2026-04-01', pricing: { quoteValue: 10, currency: 'USD' }, wonDateEdited: true, wonDateEditedBy: 'Alice' },
+        { id: 'w3', status: 'won', createdByUid: 'alice', projectName: 'Tower', clientCompany: 'Beta', poNumber: 'po 1', wonDate: '2026-05-01', pricing: { quoteValue: 5, currency: 'USD' } }
+    ] });
+    const won = Object.fromEntries(rows.filter(r => r.kind === 'won').map(r => [r.id, r]));
+    assert.equal(won['won:w1'].duplicateOf, undefined);
+    assert.deepEqual(won['won:w2'].duplicateOf, { projectName: 'Bridge', date: '2026-03-01', bdmName: 'Alice', samePo: false });
+    assert.equal(won['won:w3'].duplicateOf.samePo, true);
+    assert.deepEqual([won['won:w2'].wonDateEdited, won['won:w2'].wonDateEditedBy, won['won:w1'].wonDateEdited], [true, 'Alice', false]);
+});
 test('approved purchase projects are a separate, non-BDM source at their initial sales value', () => {
     const purchaseProjects = [
         { id: 'pp1', projectNumber: 'EB-101', name: 'Plant shed', client: 'Acme', projectValue: 999, sales: { include: true, value: 500, currency: 'INR', date: '2026-10-05' } },

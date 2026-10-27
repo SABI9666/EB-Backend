@@ -19,6 +19,8 @@ One report serves the sales portal and COO / Director. It reads `users`, `propos
 - Won: proposals a BDM marked won, at the priced quote value (pricing quote value and currency), dated by the won date (or the P.O. date / last update when an older record has no won date). The P.O. value the BDM typed is returned alongside for comparison and used only when the proposal was never priced. A won proposal with neither value is listed and flagged.
 - Variations: entries Accounts uploaded against a BDM (`accountVariations`), dated by upload. Rejected / cancelled entries are excluded.
 - Purchase projects: the initial approved sales value of purchase portal projects at the award / PO date. Shown separately and never attributed to a BDM.
+- Won dates: the BDM picks the won date when marking a proposal won and can correct it later ("Edit won date"); COO / Director can too. Every change is kept in `wonDateHistory`, and edited dates are marked in the report.
+- Duplicates: a second open proposal for the same project and client, a second "Won" on the same proposal, and a P.O. number already used on another won win are refused. Existing repeat wins (same project and client, or same P.O. number) stay in the totals but are flagged as possible duplicates.
 - RFQ value: the quote value the estimator entered on the proposal (pricing), dated by pricing. Reported on its own; never added to sales.
 - Sales total = won + variations (BDM sales) + purchase projects. It is not invoiced revenue or payments collected.
 - The manual "Upload Quote / Won" ledger (`bdm_entries`) is no longer read.
