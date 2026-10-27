@@ -15,18 +15,24 @@ const fixture = {
     ],
     purchase_projects: []
 };
-test('won = P.O. value the BDM entered; RFQ = estimator quote value; variations from Accounts', () => {
+test('won = priced quote value (P.O. kept for reference); RFQ = estimator quote value; variations from Accounts', () => {
     const { rows } = buildReport({ ...fixture, purchaseProjects: [] });
     const pick = kind => rows.filter(r => r.kind === kind).map(r => [r.source, r.bdmUid, r.projectName, r.value, r.currency, r.date, r.reference]);
-    assert.deepEqual(pick('won'), [['proposals', 'alice', 'Bridge', 100, 'CAD', '2026-10-01', 'PO-1']]);
+    assert.deepEqual(pick('won'), [['proposals', 'alice', 'Bridge', 120, 'CAD', '2026-10-01', 'PO-1']]);
+    const won = rows.find(r => r.kind === 'won');
+    assert.deepEqual([won.poValue, won.poCurrency, won.status], [100, 'CAD', 'won']);
     assert.deepEqual(pick('rfq'), [['estimator', 'alice', 'Bridge', 120, 'CAD', '2026-09-30', ''], ['estimator', 'alice', 'Shed', 50, 'USD', '2026-09-15', '']]);
     assert.deepEqual(pick('variation'), [['accounts', 'alice', 'Bridge', 20, 'INR', '2026-10-02', 'VAR-1']]);
     assert.equal(rows.length, 4);
 });
-test('won proposal without a P.O. value stays visible and flagged; unknown owner is Unassigned', () => {
-    const { rows } = buildReport({ users: [], proposals: [{ id: 'p', status: 'won', poValue: '' }] });
-    assert.equal(rows.length, 1);
-    assert.deepEqual([rows[0].value, rows[0].date, rows[0].currency, rows[0].bdmUid, rows[0].status], [null, null, 'UNSPECIFIED', 'unassigned', 'won · no P.O. value']);
+test('won without pricing falls back to P.O. value; won date falls back to last update; no value stays flagged', () => {
+    const { rows } = buildReport({ users: [], proposals: [
+        { id: 'a', status: 'won', poValue: 40, poCurrency: 'usd', updatedAt: '2026-01-05' },
+        { id: 'b', status: 'won', pricing: { quoteValue: 53100, currency: 'USD' }, wonDate: '2026-02-01', poValue: 10 },
+        { id: 'c', status: 'won', poValue: '' }
+    ] });
+    const won = rows.filter(r => r.kind === 'won').map(r => [r.value, r.currency, r.date, r.status, r.bdmUid]);
+    assert.deepEqual(won, [[40, 'USD', '2026-01-05', 'won · P.O. value (not priced)', 'unassigned'], [53100, 'USD', '2026-02-01', 'won', 'unassigned'], [null, 'UNSPECIFIED', null, 'won · no value', 'unassigned']]);
 });
 test('approved purchase projects are a separate, non-BDM source at their initial sales value', () => {
     const purchaseProjects = [

@@ -16,7 +16,7 @@ The repository does not contain deployed Firestore / Storage rules. Before produ
 
 One report serves the sales portal and COO / Director. It reads `users`, `proposals`, `accountVariations` and `purchase_projects`.
 
-- Won: proposals a BDM marked won. The value is the P.O. value the BDM entered when clicking Won, in the P.O. currency, dated by the won date. A won proposal without a P.O. value is listed with no value and flagged.
+- Won: proposals a BDM marked won, at the priced quote value (pricing quote value and currency), dated by the won date (or the P.O. date / last update when an older record has no won date). The P.O. value the BDM typed is returned alongside for comparison and used only when the proposal was never priced. A won proposal with neither value is listed and flagged.
 - Variations: entries Accounts uploaded against a BDM (`accountVariations`), dated by upload. Rejected / cancelled entries are excluded.
 - Purchase projects: the initial approved sales value of purchase portal projects at the award / PO date. Shown separately and never attributed to a BDM.
 - RFQ value: the quote value the estimator entered on the proposal (pricing), dated by pricing. Reported on its own; never added to sales.
