@@ -4,50 +4,29 @@ const express = require('express');
 const { buildReport } = require('../lib/sales-report');
 const fixture = {
     users: [{ id: 'alice', role: 'bdm', name: 'Alice', email: 'alice@example.com' }],
-    projects: [{ id: 'project1', proposalId: 'proposal1', bdmUid: 'alice', projectName: 'Bridge', quoteValue: 120, currency: 'CAD' }],
-    proposals: [{ id: 'proposal1', status: 'won', wonDate: '2026-10-01', createdByUid: 'alice', poValue: 100, poCurrency: 'CAD', pricing: { quoteValue: 120, currency: 'CAD', pricedAt: '2026-09-30' } }],
-    variations: [{ id: 'v1', parentProjectId: 'project1', status: 'approved', approvedValue: 0, value: 20, currency: 'CAD', approvedAt: '2026-10-02' }, { id: 'v2', parentProjectId: 'project1', status: 'pending', value: 50 }],
-    entries: [{ id: 'entry1', type: 'won', bdmEmail: 'ALICE@example.com', value: 100, currency: 'USD', date: '2026-10-01', projectName: 'Bridge' }]
+    proposals: [
+        { id: 'p1', status: 'won', createdByUid: 'alice', projectName: 'Bridge', clientCompany: 'Acme', wonDate: '2026-10-01', poNumber: 'PO-1', poValue: 100, poCurrency: 'CAD', pricing: { quoteValue: 120, currency: 'CAD', pricedAt: '2026-09-30', projectNumber: 'EB-1' } },
+        { id: 'p2', status: 'submitted_to_client', createdByEmail: 'ALICE@example.com', projectName: 'Shed', pricing: { quoteValue: 50, currency: 'USD', pricedAt: '2026-09-15' } },
+        { id: 'p3', status: 'pending_estimation', createdByUid: 'alice', projectName: 'Draft' }
+    ],
+    accountVariations: [
+        { id: 'v1', bdmUid: 'alice', bdmName: 'Alice', variationValue: 20, currency: 'inr', projectName: 'Bridge', referenceCode: 'VAR-1', status: 'submitted', createdAt: '2026-10-02' },
+        { id: 'v2', bdmUid: 'alice', variationValue: 99, currency: 'INR', status: 'rejected', createdAt: '2026-10-02' }
+    ],
+    purchase_projects: []
 };
-test('BDM figures use uploads; proposal quotes and proposal wins from April 2026 are not read', () => {
-    const { rows } = buildReport(fixture);
+test('won = P.O. value the BDM entered; RFQ = estimator quote value; variations from Accounts', () => {
+    const { rows } = buildReport({ ...fixture, purchaseProjects: [] });
+    const pick = kind => rows.filter(r => r.kind === kind).map(r => [r.source, r.bdmUid, r.projectName, r.value, r.currency, r.date, r.reference]);
+    assert.deepEqual(pick('won'), [['proposals', 'alice', 'Bridge', 100, 'CAD', '2026-10-01', 'PO-1']]);
+    assert.deepEqual(pick('rfq'), [['estimator', 'alice', 'Bridge', 120, 'CAD', '2026-09-30', ''], ['estimator', 'alice', 'Shed', 50, 'USD', '2026-09-15', '']]);
+    assert.deepEqual(pick('variation'), [['accounts', 'alice', 'Bridge', 20, 'INR', '2026-10-02', 'VAR-1']]);
+    assert.equal(rows.length, 4);
+});
+test('won proposal without a P.O. value stays visible and flagged; unknown owner is Unassigned', () => {
+    const { rows } = buildReport({ users: [], proposals: [{ id: 'p', status: 'won', poValue: '' }] });
     assert.equal(rows.length, 1);
-    assert.deepEqual([rows[0].source, rows[0].kind, rows[0].bdmUid, rows[0].value, rows[0].currency, rows[0].date], ['manual', 'won', 'alice', 100, 'USD', '2026-10-01']);
-    assert.equal(rows.filter(r => r.kind === 'quote').length, 0);
-});
-test('proposals marked won from Dec 2025 to Mar 2026 are added once, at PO value', () => {
-    const proposals = [
-        { id: 'p1', status: 'won', wonDate: '2026-02-10', createdByUid: 'alice', poValue: 300, poCurrency: 'INR', pricing: { quoteValue: 400, currency: 'INR' } },
-        { id: 'p2', status: 'won', wonDate: '2025-12-01', createdByUid: 'alice', pricing: { quoteValue: 50, currency: 'USD' } },
-        { id: 'p3', status: 'won', wonDate: '2025-11-30', createdByUid: 'alice', poValue: 1 },
-        { id: 'p4', status: 'won', wonDate: '2026-04-01', createdByUid: 'alice', poValue: 1 },
-        { id: 'p5', status: 'won', createdByUid: 'alice', poValue: 1 }
-    ];
-    const projects = [{ id: 'proj1', proposalId: 'p1', bdmUid: 'alice', projectName: 'Shed' }];
-    const rows = buildReport({ users: fixture.users, entries: [], projects, proposals }).rows;
-    assert.deepEqual(rows.map(r => [r.source, r.kind, r.projectName, r.value, r.currency, r.date, r.bdmUid]),
-        [['proposals', 'won', 'Shed', 300, 'INR', '2026-02-10', 'alice'], ['proposals', 'won', 'Unnamed project', 50, 'USD', '2025-12-01', 'alice']]);
-});
-test('proposal chart data: won proposals from Dec 2025 at quoted value, as in COO analytics', () => {
-    const proposals = [
-        { id: 'a', status: 'won', wonDate: '2026-05-02', createdByName: 'Alice A', pricing: { quoteValue: 400 } },
-        { id: 'b', status: 'won', updatedAt: '2025-12-20', createdByUid: 'alice' },
-        { id: 'c', status: 'won', wonDate: '2025-11-30', createdByName: 'Old', pricing: { quoteValue: 9 } },
-        { id: 'd', status: 'lost', wonDate: '2026-05-02', pricing: { quoteValue: 9 } }
-    ];
-    assert.deepEqual(buildReport({ users: fixture.users, entries: [], proposals }).proposalWins,
-        [{ date: '2026-05-02', bdmName: 'Alice A', value: 400 }, { date: '2025-12-20', bdmName: 'Alice', value: 0 }]);
-});
-test('uploaded quotes, wins and variations are kept; other entry types and missing metadata stay visible', () => {
-    const entries = [
-        { id: 'q', type: 'quote', bdmUid: 'alice', value: 500, currency: 'INR', date: '2026-10-03' },
-        { id: 'v', type: 'variation', bdmUid: 'alice', value: '25', currency: 'inr', date: '2026-10-04' },
-        { id: 'x', type: 'note', bdmUid: 'alice', value: 999 },
-        { id: 'w', type: 'won', value: 0 }
-    ];
-    const { rows } = buildReport({ users: fixture.users, entries });
-    assert.deepEqual(rows.map(r => [r.kind, r.value, r.currency]), [['quote', 500, 'INR'], ['variation', 25, 'INR'], ['won', 0, 'UNSPECIFIED']]);
-    assert.equal(rows[2].date, null); assert.equal(rows[2].bdmUid, 'unassigned');
+    assert.deepEqual([rows[0].value, rows[0].date, rows[0].currency, rows[0].bdmUid, rows[0].status], [null, null, 'UNSPECIFIED', 'unassigned', 'won · no P.O. value']);
 });
 test('approved purchase projects are a separate, non-BDM source at their initial sales value', () => {
     const purchaseProjects = [
@@ -55,7 +34,7 @@ test('approved purchase projects are a separate, non-BDM source at their initial
         { id: 'pp2', projectNumber: 'EB-102', name: 'Pending', projectValue: 300, sales: null },
         { id: 'pp3', projectNumber: 'EB-103', name: 'Excluded', sales: { include: false, value: 200, currency: 'INR', date: '2026-10-05' } }
     ];
-    const rows = buildReport({ ...fixture, purchaseProjects }).rows.filter(r => r.source === 'purchase');
+    const rows = buildReport({ users: fixture.users, purchaseProjects }).rows;
     assert.equal(rows.length, 1);
     assert.deepEqual([rows[0].kind, rows[0].value, rows[0].currency, rows[0].date, rows[0].projectNumber, rows[0].client, rows[0].bdmName], ['purchase', 500, 'INR', '2026-10-05', 'EB-101', 'Acme', 'Purchase portal']);
 });
@@ -75,7 +54,7 @@ const firestore = () => ({ collection: name => ({
     orderBy() { return this; }, limit() { return this; }, startAfter() { return this; },
     async get() {
         if (failCollection) throw new Error('Database unavailable');
-        const rows = fixture[name === 'bdm_entries' ? 'entries' : name] || [];
+        const rows = fixture[name] || [];
         return { size: rows.length, docs: rows.map(r => ({ id: r.id, data: () => r })) };
     }
 }) });
@@ -96,7 +75,7 @@ test('API only allows intended monitoring identities and rejects every sales mut
     for (const token of ['sales', 'mixed', 'coo', 'director']) {
         const response = await call(token); assert.equal(response.status, 200, token);
         assert.equal(response.headers.get('cache-control'), 'no-store');
-        const result = await response.json(); assert.equal(result.data.rows.length, 1);
+        const result = await response.json(); assert.equal(result.data.rows.length, 4);
     }
     for (const token of ['forged', 'suspended', 'bdm', 'purchase']) assert.equal((await call(token)).status, 403, token);
     for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']) assert.equal((await call('sales', 'sales-monitor', method)).status, 403, method);

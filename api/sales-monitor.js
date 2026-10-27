@@ -22,9 +22,9 @@ router.use(verifyToken, requireRole(['sales_monitor', 'coo', 'director']));
 router.get('/', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     try {
-        const [users, entries, projects, proposals, purchaseProjects] = await Promise.all(
-            ['users', 'bdm_entries', 'projects', 'proposals', 'purchase_projects'].map(readCollection));
-        res.json({ success: true, data: buildReport({ users, entries, projects, proposals, purchaseProjects }) });
+        const [users, proposals, accountVariations, purchaseProjects] = await Promise.all(
+            ['users', 'proposals', 'accountVariations', 'purchase_projects'].map(readCollection));
+        res.json({ success: true, data: buildReport({ users, proposals, accountVariations, purchaseProjects }) });
     } catch (error) {
         console.error('Sales monitor read failed:', error);
         res.status(503).json({ success: false, error: 'Sales data could not be loaded completely. Please retry or contact your administrator.' });
