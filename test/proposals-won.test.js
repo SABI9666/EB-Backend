@@ -2,11 +2,13 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const docs = new Map();
+const deleted = [];
 const activity = [];
 const value = v => (v && v.__op === 'ts') ? new Date('2026-10-27T09:00:00Z') : v;
 const collection = name => ({
     doc: id => ({
         get: async () => ({ exists: name === 'proposals' && docs.has(id), id, data: () => docs.get(id) }),
+        delete: async () => { deleted.push(id); docs.delete(id); },
         update: async updates => { const d = docs.get(id); for (const [k, v] of Object.entries(updates)) d[k] = v && v.__op === 'union' ? [...(d[k] || []), ...v.items] : value(v); }
     }),
     add: async data => { if (name === 'proposals') { const id = 'new' + docs.size; docs.set(id, data); return { id }; } activity.push(data); return { id: 'x' }; },
@@ -24,7 +26,7 @@ const bdm = { uid: 'sabin', role: 'bdm', name: 'Sabin', email: 's@x' };
 async function call(method, query, body, user = bdm) {
     let status = 200, json;
     const res = { setHeader() {}, status(s) { status = s; return this; }, json(j) { json = j; return this; }, end() { return this; } };
-    await handler({ method, query, body, headers: {}, testUser: user }, res);
+    await handler({ method, query: query || {}, body, headers: {}, testUser: user }, res);
     return { status, json };
 }
 test('duplicate proposals and duplicate P.O. numbers are refused', async () => {
@@ -46,6 +48,7 @@ test('mark won uses the chosen date once; P.O. update keeps it; a second Won cli
     const upd = await call('PUT', { id: 'p1' }, { action: 'mark_won', data: { poUpdated: true, poNumber: 'PO-1', poValue: 150, poCurrency: 'CAD' } });
     assert.equal(upd.status, 200); assert.equal(docs.get('p1').poValue, 150);
     assert.equal(docs.get('p1').wonDate.toISOString(), '2026-10-05T12:00:00.000Z', 'P.O. update keeps the won date');
+    assert.deepEqual(docs.get('p1').changeLog.map(e => e.action), ['mark_won', 'update_po'], 'P.O. update is logged separately from the win');
     const future = await call('PUT', { id: 'p1' }, { action: 'mark_won', data: { poNumber: 'PO-1', poValue: 1, wonDate: '2099-01-01' } });
     assert.equal(future.status, 409, 'already won wins over a bad date');
 });
@@ -63,4 +66,12 @@ test('only the owning BDM (or COO / Director) edits the won date, with history',
     assert.equal(coo.status, 200);
     const notWon = await call('PUT', { id: 'new1' }, { action: 'update_won_date', data: { wonDate: '2026-09-30' } }, { uid: 'c', role: 'coo', name: 'COO' });
     assert.equal(notWon.status, 400);
+});
+test('a duplicate can be deleted by its BDM, but not once a project exists', async () => {
+    docs.set('d1', { projectName: 'Bridge', clientCompany: 'Acme', status: 'won', createdByUid: 'sabin' });
+    docs.set('d2', { projectName: 'Bridge', clientCompany: 'Acme', status: 'won', createdByUid: 'sabin', projectCreated: true, projectId: 'pr1' });
+    assert.equal((await call('DELETE', { id: 'd2' })).status, 409);
+    assert.equal((await call('DELETE', { id: 'd1' }, undefined, { uid: 'gerard', role: 'bdm', name: 'Gerard' })).status, 403);
+    assert.equal((await call('DELETE', { id: 'd1' })).status, 200);
+    assert.deepEqual(deleted, ['d1']);
 });
