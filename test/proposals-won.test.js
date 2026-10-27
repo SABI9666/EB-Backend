@@ -30,15 +30,15 @@ async function call(method, query, body, user = bdm) {
     await handler({ method, query: query || {}, body, headers: {}, testUser: user }, res);
     return { status, json };
 }
-test('duplicate proposals and duplicate P.O. numbers are refused', async () => {
+test('duplicate proposals are refused; a proposal lists its same-project duplicates', async () => {
     docs.set('p1', { projectName: 'Bridge', clientCompany: 'Acme', status: 'submitted_to_client', createdByUid: 'sabin' });
     const dup = await call('POST', {}, { projectName: ' bridge', clientCompany: 'ACME', projectDescription: 'x' });
     assert.equal(dup.status, 409); assert.match(dup.json.error, /already exists/);
     const ok = await call('POST', {}, { projectName: 'Tower', clientCompany: 'Acme', projectDescription: 'x' });
     assert.equal(ok.status, 201);
     docs.set('p0', { projectName: 'Shed', clientCompany: 'Beta', status: 'won', poNumber: 'PO-7', createdByUid: 'sabin' });
-    const samePo = await call('PUT', { id: 'p1' }, { action: 'mark_won', data: { poNumber: 'po 7', poValue: 10, wonDate: '2026-10-05' } });
-    assert.equal(samePo.status, 409); assert.match(samePo.json.error, /already recorded/);
+    const dups = await call('GET', { id: 'p1', duplicates: '1' });
+    assert.deepEqual(dups.json.data.duplicates.map(d => d.id), [], 'no other Bridge / Acme proposal');
 });
 test('mark won uses the chosen date once; P.O. update keeps it; a second Won click is refused', async () => {
     const won = await call('PUT', { id: 'p1' }, { action: 'mark_won', data: { poNumber: 'PO-1', poValue: 100, poCurrency: 'cad', wonDate: '2026-10-05' } });
@@ -103,4 +103,13 @@ test('only the first WON sends the "Project won" email; P.O. updates and won dat
     assert.equal((await call('PUT', { id: 'e1' }, { action: 'mark_won', data: { poUpdated: true, poNumber: 'PO-MAIL', poValue: 6 } })).status, 200);
     assert.equal((await call('PUT', { id: 'e1' }, { action: 'update_won_date', data: { wonDate: '2026-10-11' } })).status, 200);
     assert.deepEqual(emails, ['project.won']);
+});
+test('details list same-project proposals from every BDM; a shared placeholder P.O. is allowed', async () => {
+    docs.set('g1', { projectName: 'Grande Forks Hotel', clientCompany: 'canasteel', status: 'won', createdByUid: 'sabin', poNumber: 'PO #CANASTEEL' });
+    docs.set('g2', { projectName: 'Grande Forks Hotel', clientCompany: 'Canasteel', status: 'lost', createdByUid: 'gerard', createdByName: 'Gerard' });
+    docs.set('g3', { projectName: 'Other job', clientCompany: 'canasteel', status: 'approved', createdByUid: 'sabin', submittedToClientAt: 'x' });
+    const got = await call('GET', { id: 'g1', duplicates: '1' });
+    assert.deepEqual(got.json.data.duplicates.map(d => [d.id, d.createdByName]), [['g2', 'Gerard']]);
+    const won = await call('PUT', { id: 'g3' }, { action: 'mark_won', data: { poNumber: 'PO #CANASTEEL', poValue: 500, poCurrency: 'CAD', wonDate: '2026-07-29' } });
+    assert.equal(won.status, 200, 'same placeholder P.O. on a different project is fine');
 });

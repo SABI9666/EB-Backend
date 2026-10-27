@@ -3,7 +3,7 @@ const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
 const { sendEmailNotification } = require('./email');
-const { findDuplicateProposal, findDuplicatePo, parseWonDate } = require('../lib/proposal-rules');
+const { findDuplicateProposal, findSameProject, parseWonDate } = require('../lib/proposal-rules');
 
 const db = admin.firestore();
 const bucket = admin.storage().bucket();
@@ -47,6 +47,12 @@ const handler = async (req, res) => {
         // ============================================
         // GET - Retrieve proposals
         // ============================================
+        // Light read of every proposal for duplicate checks: same project and client.
+        const proposalIndex = async () => (await db.collection('proposals')
+            .select('projectName', 'clientCompany', 'status', 'createdByName', 'createdByUid', 'createdAt', 'wonDate',
+                'pricing.quoteValue', 'pricing.currency', 'poNumber', 'poValue', 'poCurrency', 'projectCreated', 'projectId').get())
+            .docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
         if (req.method === 'GET') {
             const { id } = req.query;
             
@@ -101,7 +107,9 @@ const handler = async (req, res) => {
                     }
                 }
                 
-                return res.status(200).json({ success: true, data: { id: doc.id, ...proposalData } });
+                // Other proposals (any BDM) for the same project and client, so duplicates can be cleaned up.
+                const duplicates = req.query.duplicates ? findSameProject(await proposalIndex(), proposalData, doc.id) : undefined;
+                return res.status(200).json({ success: true, data: { id: doc.id, ...proposalData, ...(duplicates ? { duplicates } : {}) } });
             }
             
             // Get all proposals with role-based filtering
@@ -177,11 +185,6 @@ const handler = async (req, res) => {
             
             return res.status(200).json({ success: true, data: proposals });
         }
-
-        // Light read of every proposal for duplicate checks (project / client / P.O. number only).
-        const proposalIndex = async () => (await db.collection('proposals')
-            .select('projectName', 'clientCompany', 'status', 'poNumber', 'poDetails', 'createdByName').get())
-            .docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
         // ============================================
         // POST - Create proposal
@@ -618,10 +621,6 @@ const handler = async (req, res) => {
                     const isPoUpdate = proposal.status === 'won';
                     if (isPoUpdate && !(data && data.poUpdated)) {
                         return res.status(409).json({ success: false, error: 'This proposal is already marked as WON. Use "Update P.O." to change the P.O. details or "Edit won date" to change the date.' });
-                    }
-                    const samePo = findDuplicatePo(await proposalIndex(), poNumber, id);
-                    if (samePo) {
-                        return res.status(409).json({ success: false, error: `P.O. number ${poNumber} is already recorded on the won proposal "${samePo.projectName}". Each P.O. can be entered once.` });
                     }
                     let chosenWonDate = null;
                     if (!isPoUpdate && data && data.wonDate) {
