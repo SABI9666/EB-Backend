@@ -14,16 +14,17 @@ The repository does not contain deployed Firestore / Storage rules. Before produ
 
 ## Report definitions
 
-- Project records: won projects and unconverted won proposals, approved variations, and priced proposal quotes. A project and its linked proposal are counted as one win. The recorded PO value takes precedence over the quoted value, with the corresponding PO currency. Project win dates fall back to the linked proposal's win date.
-- Manual BDM uploads: the `bdm_entries` quote/won/variation ledger, displayed as a separate source. It is not added to project records because there is no reliable cross-ledger deduplication key.
-- Booked sales means won values plus approved / manually recorded variations. It is not recognized accounting revenue, invoiced revenue, or payments collected.
-- Currencies are never added together or converted using assumed rates. Missing currencies are explicitly grouped as UNSPECIFIED.
-- Missing values and dates remain visible and are flagged. Date filters exclude undated records. Zero values remain zero rather than falling through to another amount field.
-- Quotes have their own metric; they are not added to booked sales.
-- BDM identity uses stored UID, then canonical email. Unknown owners remain visible as Unassigned.
-- Date filters use the UTC event date: win date, quote pricing date, or variation approval/entry date. Filters initially show all dates. The detail-type filter only affects the final table.
+One report serves the sales portal and COO / Director. It reads `users`, `proposals`, `accountVariations` and `purchase_projects`.
 
-The endpoint reads all five source collections in pages of 1,000, without requiring date fields or composite indexes. At 20,000 records in any source, it returns an explicit unavailable response instead of silently truncating totals. Collection failures also fail the whole report; old totals are cleared on refresh failure. Responses are `no-store` and contain only report fields, not attachments or raw user documents.
+- Won: proposals a BDM marked won. The value is the P.O. value the BDM entered when clicking Won, in the P.O. currency, dated by the won date. A won proposal without a P.O. value is listed with no value and flagged.
+- Variations: entries Accounts uploaded against a BDM (`accountVariations`), dated by upload. Rejected / cancelled entries are excluded.
+- Purchase projects: the initial approved sales value of purchase portal projects at the award / PO date. Shown separately and never attributed to a BDM.
+- RFQ value: the quote value the estimator entered on the proposal (pricing), dated by pricing. Reported on its own; never added to sales.
+- Sales total = won + variations (BDM sales) + purchase projects. It is not invoiced revenue or payments collected.
+- The manual "Upload Quote / Won" ledger (`bdm_entries`) is no longer read.
+- The report starts on 1 December 2025. Missing values and dates stay visible and are flagged.
+
+The endpoint reads all four source collections in pages of 1,000, without requiring date fields or composite indexes. At 20,000 records in any source, it returns an explicit unavailable response instead of silently truncating totals. Collection failures also fail the whole report; old totals are cleared on refresh failure. Responses are `no-store` and contain only report fields, not attachments or raw user documents.
 
 ## Validation
 
