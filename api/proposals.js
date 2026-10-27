@@ -698,6 +698,7 @@ const handler = async (req, res) => {
 
                 case 'update_won_date': {
                     // The BDM who won the proposal (or COO / Director) corrects the won date; history is kept.
+                    // No email is sent: the "Project won" email goes out only when the proposal is first marked won.
                     if (!((req.user.role === 'bdm' && proposal.createdByUid === req.user.uid) || ['coo', 'director'].includes(req.user.role))) {
                         return res.status(403).json({ success: false, error: 'Only the BDM who won this proposal, COO or Director can change the won date' });
                     }

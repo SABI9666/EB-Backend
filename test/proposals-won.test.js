@@ -20,7 +20,8 @@ firestore.FieldValue = { delete: () => ({ __op: 'delete' }), serverTimestamp: ()
 firestore.Timestamp = { fromDate: d => d };
 require.cache[require.resolve('../api/_firebase-admin')] = { exports: { firestore, storage: () => ({ bucket: () => ({}) }) } };
 require.cache[require.resolve('../middleware/auth')] = { exports: { verifyToken: (req, res, next) => { req.user = req.testUser; next(); } } };
-require.cache[require.resolve('../api/email')] = { exports: { sendEmailNotification: async () => {} } };
+const emails = [];
+require.cache[require.resolve('../api/email')] = { exports: { sendEmailNotification: async event => { emails.push(event); } } };
 const handler = require('../api/proposals');
 const bdm = { uid: 'sabin', role: 'bdm', name: 'Sabin', email: 's@x' };
 async function call(method, query, body, user = bdm) {
@@ -94,4 +95,12 @@ test('removing a repeat WON entry restores the first click date; removing the la
     p = docs.get('r1');
     assert.deepEqual([p.status, p.wonDate, p.poNumber, p.poValue, p.hasPO], ['submitted_to_client', undefined, undefined, undefined, undefined]);
     assert.equal((await call('PUT', { id: 'r1' }, { action: 'remove_won_click', data: {} })).status, 400, 'no longer won');
+});
+test('only the first WON sends the "Project won" email; P.O. updates and won date edits send none', async () => {
+    docs.set('e1', { projectName: 'Mail test', clientCompany: 'Zed', status: 'submitted_to_client', createdByUid: 'sabin' });
+    emails.length = 0;
+    assert.equal((await call('PUT', { id: 'e1' }, { action: 'mark_won', data: { poNumber: 'PO-MAIL', poValue: 5, wonDate: '2026-10-10' } })).status, 200);
+    assert.equal((await call('PUT', { id: 'e1' }, { action: 'mark_won', data: { poUpdated: true, poNumber: 'PO-MAIL', poValue: 6 } })).status, 200);
+    assert.equal((await call('PUT', { id: 'e1' }, { action: 'update_won_date', data: { wonDate: '2026-10-11' } })).status, 200);
+    assert.deepEqual(emails, ['project.won']);
 });
