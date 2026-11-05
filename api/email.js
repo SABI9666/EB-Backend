@@ -1273,6 +1273,7 @@ async function sendEmailNotification(event, data) {
     // Use appropriate FROM email based on event type
     const isHREvent = event.startsWith('screening.');
     const isDesignClientEvent = event === 'design.sent_to_client';
+    const isInvoiceEvent = event.startsWith('invoice.');
     let fromEmail = FROM_EMAIL;
     if (isHREvent) fromEmail = HR_FROM_EMAIL;
     if (isDesignClientEvent) fromEmail = DESIGN_FROM_EMAIL;
