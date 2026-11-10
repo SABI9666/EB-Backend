@@ -3,7 +3,7 @@ const admin = require('./_firebase-admin');
 const { verifyToken } = require('../middleware/auth');
 const util = require('util');
 const { sendEmailNotification } = require('./email');
-const { findDuplicateProposal, findSameProject, parseWonDate } = require('../lib/proposal-rules');
+const { findDuplicateProposal, findSameProject, parseDay, parseWonDate } = require('../lib/proposal-rules');
 
 const db = admin.firestore();
 const bucket = admin.storage().bucket();
@@ -214,6 +214,14 @@ const handler = async (req, res) => {
                 });
             }
 
+            // Proposal / RFQ date chosen by the BDM (the date the enquiry came in); defaults to today.
+            let proposalDate = null;
+            if (req.body.proposalDate) {
+                const parsed = parseDay(req.body.proposalDate, 'Proposal date');
+                if (parsed.error) return res.status(400).json({ success: false, error: parsed.error });
+                proposalDate = admin.firestore.Timestamp.fromDate(parsed.date);
+            }
+
             // Block a second open proposal for the same project and client (double submits included).
             const duplicate = findDuplicateProposal(await proposalIndex(), { projectName, clientCompany });
             if (duplicate) {
@@ -226,6 +234,7 @@ const handler = async (req, res) => {
                 clientCompany,
                 projectDescription: description,
                 scopeOfWork: description, // Store in both fields for compatibility
+                ...(proposalDate ? { proposalDate } : {}),
                 projectType: projectType || [],
                 country: country || '',
                 timeline: timeline || '',
@@ -720,6 +729,27 @@ const handler = async (req, res) => {
                         wonDateHistory: admin.firestore.FieldValue.arrayUnion({ from: previousText, to: parsed.text, by: req.user.name, at: new Date().toISOString() })
                     };
                     activityDetail = `Won date changed from ${previousText} to ${parsed.text}`;
+                    break;
+                }
+
+                case 'update_proposal_date': {
+                    // The BDM who owns the proposal (or COO / Director) sets the proposal / RFQ date the reports use.
+                    if (!((req.user.role === 'bdm' && proposal.createdByUid === req.user.uid) || ['coo', 'director'].includes(req.user.role))) {
+                        return res.status(403).json({ success: false, error: 'Only the BDM who created this proposal, COO or Director can change its date' });
+                    }
+                    const parsed = parseDay(data && data.proposalDate, 'Proposal date');
+                    if (parsed.error) return res.status(400).json({ success: false, error: parsed.error });
+                    const asDay = ts => { const d = ts && (ts.toDate ? ts.toDate() : new Date(ts._seconds != null ? ts._seconds * 1000 : ts.seconds != null ? ts.seconds * 1000 : ts)); return d && Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : 'not set'; };
+                    const previous = asDay(proposal.proposalDate || proposal.createdAt);
+                    if (previous === parsed.text) return res.status(400).json({ success: false, error: 'The proposal date is already ' + parsed.text });
+                    updates = {
+                        proposalDate: admin.firestore.Timestamp.fromDate(parsed.date),
+                        proposalDateEdited: true,
+                        proposalDateEditedBy: req.user.name,
+                        proposalDateEditedAt: admin.firestore.FieldValue.serverTimestamp(),
+                        proposalDateHistory: admin.firestore.FieldValue.arrayUnion({ from: previous, to: parsed.text, by: req.user.name, at: new Date().toISOString() })
+                    };
+                    activityDetail = `Proposal date changed from ${previous} to ${parsed.text}`;
                     break;
                 }
 
