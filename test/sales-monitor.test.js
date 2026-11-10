@@ -46,6 +46,14 @@ test('repeat wins of the same project and client are flagged (not a shared P.O. 
     assert.equal(won['won:w3'].duplicateOf, undefined, 'a reused placeholder P.O. on another project is not a duplicate');
     assert.deepEqual([won['won:w2'].wonDateEdited, won['won:w2'].wonDateEditedBy, won['won:w1'].wonDateEdited], [true, 'Alice', false]);
 });
+test('RFQ is dated by the BDM proposal date, else the creation date; pricing date is kept alongside', () => {
+    const { rows } = buildReport({ users: fixture.users, proposals: [
+        { id: 'a', createdByUid: 'alice', projectName: 'A', createdAt: '2026-10-01', proposalDate: '2026-09-20T12:00:00Z', proposalDateEdited: true, proposalDateEditedBy: 'Alice', pricing: { quoteValue: 10, currency: 'USD', pricedAt: '2026-10-08' } },
+        { id: 'b', createdByUid: 'alice', projectName: 'B', createdAt: '2026-10-02', pricing: { quoteValue: 5, currency: 'USD', pricedAt: '2026-10-09' } }
+    ] });
+    assert.deepEqual(rows.map(r => [r.projectName, r.date, r.pricedDate, r.proposalDateEdited, r.proposalDateEditedBy]),
+        [['A', '2026-09-20', '2026-10-08', true, 'Alice'], ['B', '2026-10-02', '2026-10-09', false, '']]);
+});
 test('approved purchase projects are a separate, non-BDM source at their initial sales value', () => {
     const purchaseProjects = [
         { id: 'pp1', projectNumber: 'EB-101', name: 'Plant shed', client: 'Acme', projectValue: 999, sales: { include: true, value: 500, currency: 'INR', date: '2026-10-05' } },

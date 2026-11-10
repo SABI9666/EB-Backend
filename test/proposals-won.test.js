@@ -113,3 +113,18 @@ test('details list same-project proposals from every BDM; a shared placeholder P
     const won = await call('PUT', { id: 'g3' }, { action: 'mark_won', data: { poNumber: 'PO #CANASTEEL', poValue: 500, poCurrency: 'CAD', wonDate: '2026-07-29' } });
     assert.equal(won.status, 200, 'same placeholder P.O. on a different project is fine');
 });
+test('BDM sets the proposal date on create and can edit it later, with history', async () => {
+    const bad = await call('POST', {}, { projectName: 'Dated', clientCompany: 'Q', projectDescription: 'x', proposalDate: '2099-01-01' });
+    assert.equal(bad.status, 400); assert.match(bad.json.error, /future/);
+    const ok = await call('POST', {}, { projectName: 'Dated', clientCompany: 'Q', projectDescription: 'x', proposalDate: '2026-11-03' });
+    assert.equal(ok.status, 201);
+    const id = [...docs.entries()].find(([, d]) => d.projectName === 'Dated')[0];
+    assert.equal(docs.get(id).proposalDate.toISOString(), '2026-11-03T12:00:00.000Z');
+    assert.equal((await call('PUT', { id }, { action: 'update_proposal_date', data: { proposalDate: '2026-11-01' } }, { uid: 'gerard', role: 'bdm', name: 'G' })).status, 403);
+    assert.equal((await call('PUT', { id }, { action: 'update_proposal_date', data: { proposalDate: '2026-11-03' } })).status, 400, 'same date');
+    const edit = await call('PUT', { id }, { action: 'update_proposal_date', data: { proposalDate: '2026-11-01' } });
+    assert.equal(edit.status, 200);
+    const d = docs.get(id);
+    assert.deepEqual([d.proposalDate.toISOString().slice(0, 10), d.proposalDateEdited, d.proposalDateHistory[0].from, d.proposalDateHistory[0].to], ['2026-11-01', true, '2026-11-03', '2026-11-01']);
+    assert.equal((await call('PUT', { id }, { action: 'update_proposal_date', data: { proposalDate: '2026-10-30' } }, { uid: 'c', role: 'coo', name: 'COO' })).status, 200);
+});
