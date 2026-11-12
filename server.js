@@ -198,6 +198,8 @@ try {
     app.use('/api/purchases', require('./api/purchases'));
     app.use('/api/purchase-projects', require('./api/purchase-projects'));
     app.use('/api/estimation-reports', require('./api/estimation-reports'));
+    // Multi-company Timesheet Portal (separate product; own ts* collections).
+    app.use('/api/ts-portal', require('./ts-portal'));
 
     console.log('✅ All routes registered');
 } catch (error) {
