@@ -13,7 +13,8 @@
     "test:email": "node --test test/email.test.js",
     "test:proposals": "node --test test/proposal-rules.test.js test/proposals-won.test.js",
     "test:subvendors": "node --test test/subventors.test.js",
-    "test:purchase-projects": "node --test test/purchase-projects.test.js"
+    "test:purchase-projects": "node --test test/purchase-projects.test.js",
+    "test:ts-portal": "node --test test/ts-portal.test.js"
   },
   "dependencies": {
     "firebase-admin": "^11.10.1",
@@ -26,6 +27,7 @@
     "helmet": "^7.0.0",
     "morgan": "^1.10.0",
     "dotenv": "^16.3.1",
+    "exceljs": "^4.4.0",
     "node-cron": "^3.0.2",
     "resend": "^4.0.0",
     "pdfjs-dist": "3.11.174"
